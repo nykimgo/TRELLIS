@@ -4,3 +4,4 @@ from . import pipelines
 from . import renderers
 from . import representations
 from . import utils
+from . import compression
