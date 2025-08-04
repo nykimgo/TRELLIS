@@ -6,6 +6,8 @@
 # datasets and ckpts
 datasets
 microsoft
+quantization_results
+trellis/representations/mesh/flexicubes
 input_data
 *.npz
 *.zip
