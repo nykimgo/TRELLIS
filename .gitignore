@@ -5,6 +5,7 @@
 
 # datasets and ckpts
 datasets
+*.safetensors
 microsoft/**/*.safetensors
 quantization_results
 trellis/representations/mesh/flexicubes

@@ -2,11 +2,11 @@
     "name": "TrellisTextTo3DPipeline",
     "args": {
         "models": {
-            "sparse_structure_decoder": "JeffreyXiang/TRELLIS-image-large/ckpts/ss_dec_conv3d_16l8_fp16",
+            "sparse_structure_decoder": "../TRELLIS-image-large/ckpts/ss_dec_conv3d_16l8_fp16",
             "sparse_structure_flow_model": "ckpts/ss_flow_txt_dit_B_16l8_fp16",
-            "slat_decoder_gs": "JeffreyXiang/TRELLIS-image-large/ckpts/slat_dec_gs_swin8_B_64l8gs32_fp16",
-            "slat_decoder_rf": "JeffreyXiang/TRELLIS-image-large/ckpts/slat_dec_rf_swin8_B_64l8r16_fp16",
-            "slat_decoder_mesh": "JeffreyXiang/TRELLIS-image-large/ckpts/slat_dec_mesh_swin8_B_64l8m256c_fp16",
+            "slat_decoder_gs": "../TRELLIS-image-large/ckpts/slat_dec_gs_swin8_B_64l8gs32_fp16",
+            "slat_decoder_rf": "../TRELLIS-image-large/ckpts/slat_dec_rf_swin8_B_64l8r16_fp16",
+            "slat_decoder_mesh": "../TRELLIS-image-large/ckpts/slat_dec_mesh_swin8_B_64l8m256c_fp16",
             "slat_flow_model": "ckpts/slat_flow_txt_dit_B_64l8p2_fp16"
         },
         "sparse_structure_sampler": {
