@@ -1,131 +1,111 @@
-"""
-=== AI/ML Solution Design ===
-
-📋 Problem Analysis:
-- Domain: 3D Generation Model Testing Automation
-- Task Type: Batch Inference and Result Management
-- Data Characteristics: CSV input, Multiple 3D output formats
-- Constraints: English-only naming, Detailed timing measurements
-
-🎯 Solution Design:
-- Algorithm: Enhanced TRELLIS pipeline with detailed timing
-- Architecture: CSV input → Batch processing → CSV result tracking
-- Data Pipeline: pandas CSV reading, multi-stage timing measurement
-- Evaluation Metrics: Generation time breakdown, success rate tracking
-
-⚙️ Implementation Plan:
-- Development Stages: Code refactoring → Timing enhancement → CSV output
-- Technology Stack: pandas, opencv-python, time measurement
-- Infrastructure: Existing environment maintained
-- Monitoring: CSV-based comprehensive result tracking
-"""
-
 import os
 import pandas as pd
 import time
 import logging
+import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 import torch
+import random
 
+# TRELLIS 환경 설정 (임포트 전에 설정 필요)
+os.environ['SPCONV_ALGO'] = 'native'
 os.environ['ATTN_BACKEND'] = 'xformers'
 
-import imageio
-from trellis.pipelines import TrellisTextTo3DPipeline
-from trellis.utils import render_utils, postprocessing_utils
+try:
+    import imageio
+    from trellis.pipelines import TrellisTextTo3DPipeline
+    from trellis.utils import render_utils, postprocessing_utils
+    TRELLIS_AVAILABLE = True
+except ImportError as e:
+    print(f"❌ TRELLIS 모듈 임포트 실패: {e}")
+    print("💡 TRELLIS 프로젝트 루트에서 실행하거나 PYTHONPATH를 설정하세요")
+    TRELLIS_AVAILABLE = False
 
 
 class TrellisInferenceManager:
     """TRELLIS model-based 3D generation and result management class"""
     
-    def __init__(self, model_name: str = "TRELLIS-text-xlarge"):
+    def __init__(self, model_path: str = "microsoft/TRELLIS-text-xlarge", base_output_dir: str = "/mnt/nas/tmp/nayeon"):
         """
         Args:
-            model_name: TRELLIS model name to use
+            model_path: TRELLIS model path (local path or HuggingFace model name)
+            base_output_dir: Base directory for output files
         """
-        self.model_name = model_name
+        if not TRELLIS_AVAILABLE:
+            raise ImportError("TRELLIS modules are not available")
+            
+        self.model_path = model_path
+        self.base_output_dir = Path(base_output_dir)
         self.pipeline = None
         self.results_data: List[Dict] = []
-        self.object_name_counter: Dict[str, int] = {}  # Fix: Added missing initialization
+        self.object_name_counter: Dict[str, int] = {}
         
-        # Setup output folder
-        today = datetime.now().strftime("%Y%m%d")
-        self.output_base_dir = Path(f"output/{model_name}/{today}")
-        self.output_base_dir.mkdir(parents=True, exist_ok=True)
+        # 모델명 추출 (경로에서 마지막 부분)
+        self.model_name = self._extract_model_name(model_path)
         
-        # Setup logs folder
-        self.logs_dir = Path("output/logs")
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        # 현재 날짜
+        self.current_date = datetime.now().strftime('%Y%m%d')
         
-        # Initialize logging
-        self.log_filename = None
-        self.setup_logging()
+        # 출력 디렉토리 구조
+        self.output_base = self.base_output_dir / "output" / self.model_name / self.current_date
         
-        # Create default.yaml if it doesn't exist
-        self.create_default_yaml()
-        
-        print(f"Results will be saved to: {self.output_base_dir}")
+        # 로깅 설정
+        self._setup_logging()
     
-    def setup_logging(self) -> None:
-        """Setup logging configuration"""
-        # Generate log filename when logging is initialized
-        current_time = datetime.now()
-        time_str = current_time.strftime("%Y%m%d_%H%M%S")
-        self.log_filename = self.logs_dir / f"{time_str}_pending_objs.log"
+    def _extract_model_name(self, model_path: str) -> str:
+        """모델 경로에서 모델명 추출"""
+        if '/' in model_path:
+            # HuggingFace 형태 (microsoft/TRELLIS-text-xlarge) 또는 경로
+            model_name = model_path.split('/')[-1]
+        else:
+            model_name = model_path
         
-        # Setup logging configuration
+        # microsoft/ 접두사 제거
+        if model_name.startswith('microsoft-'):
+            model_name = model_name[10:]
+        
+        return model_name
+    
+    def _setup_logging(self):
+        """로깅 설정"""
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(self.log_filename, encoding='utf-8'),
-                logging.StreamHandler()  # Also output to console
+                logging.StreamHandler(),
+                logging.FileHandler('trellis_inference.log')
             ]
         )
-        
-        logging.info(f"=== TRELLIS Inference Session Started ===")
-        logging.info(f"Model: {self.model_name}")
-        logging.info(f"Output directory: {self.output_base_dir}")
     
-    def update_log_filename(self, object_count: int) -> None:
-        """Update log filename with actual object count"""
-        current_time = datetime.now()
-        time_str = current_time.strftime("%Y%m%d_%H%M%S")
-        new_log_filename = self.logs_dir / f"{time_str}_{object_count}objs.log"
+    def create_default_yaml(self, filename: str = "default.yaml") -> None:
+        """Create default YAML configuration file"""
+        default_yaml_path = Path(filename)
         
-        # Get current file handler
-        logger = logging.getLogger()
-        for handler in logger.handlers[:]:
-            if isinstance(handler, logging.FileHandler):
-                handler.close()
-                logger.removeHandler(handler)
-        
-        # Rename the file and add new handler
-        if self.log_filename and self.log_filename.exists():
-            self.log_filename.rename(new_log_filename)
-        
-        # Add new file handler
-        file_handler = logging.FileHandler(new_log_filename, encoding='utf-8')
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(file_handler)
-        
-        self.log_filename = new_log_filename
-        logging.info(f"Log filename updated: {new_log_filename}")
-    
-    def create_default_yaml(self) -> None:
-        """Create default.yaml configuration file if it doesn't exist"""
-        default_yaml_path = Path("default.yaml")
         if not default_yaml_path.exists():
             default_config = {
-                'sparse_structure_sampler_params': {
-                    'steps': 25,
-                    'cfg_strength': 7.5
+                'prompts': [
+                    "a red sports car",
+                    "a wooden chair", 
+                    "a blue coffee mug",
+                    "a small house",
+                    "a cute cat"
+                ],
+                'generation': {
+                    'seed': 'random',
+                    'sparse_structure_sampler_params': {
+                        'steps': 12,
+                        'cfg_strength': 7.5
+                    },
+                    'slat_sampler_params': {
+                        'steps': 12,
+                        'cfg_strength': 7.5
+                    }
                 },
-                'slat_sampler_params': {
-                    'steps': 25,
-                    'cfg_strength': 3.0
+                'output': {
+                    'formats': ['glb', 'ply', 'mp4'],
+                    'output_dir': './outputs'
                 },
                 'postprocessing': {
                     'simplify': 0.95,
@@ -133,23 +113,23 @@ class TrellisInferenceManager:
                 }
             }
             
-            import yaml
-            with open(default_yaml_path, 'w') as f:
-                yaml.dump(default_config, f, default_flow_style=False, indent=2)
-            logging.info(f"📄 Created default.yaml configuration file")
+            try:
+                import yaml
+                with open(default_yaml_path, 'w') as f:
+                    yaml.dump(default_config, f, default_flow_style=False, indent=2)
+                logging.info(f"📄 Created default.yaml configuration file")
+            except ImportError:
+                logging.error("❌ PyYAML not installed. Install with: pip install PyYAML")
     
     def load_yaml_config(self, yaml_filename: str) -> Optional[Dict]:
-        """
-        Load YAML configuration file
-        
-        Args:
-            yaml_filename: YAML file name
-            
-        Returns:
-            Configuration dictionary or None if failed
-        """
+        """Load YAML configuration file"""
         try:
             import yaml
+        except ImportError:
+            logging.error("❌ PyYAML not installed. Install with: pip install PyYAML")
+            return None
+            
+        try:
             yaml_path = Path(yaml_filename)
             
             if not yaml_path.exists():
@@ -168,616 +148,529 @@ class TrellisInferenceManager:
     
     def load_pipeline(self) -> None:
         """Load TRELLIS pipeline with error handling"""
-        logging.info("Loading TRELLIS pipeline...")
+        logging.info(f"🔄 Loading TRELLIS pipeline from: {self.model_path}")
         try:
-            self.pipeline = TrellisTextTo3DPipeline.from_pretrained(f"microsoft/{self.model_name}")
-            self.pipeline.cuda()
-            logging.info("Pipeline loaded successfully!")
+            # HuggingFace 모델명인지 로컬 경로인지 판단
+            if self._is_huggingface_model(self.model_path):
+                logging.info(f"📡 Loading HuggingFace model: {self.model_path}")
+                self.pipeline = TrellisTextTo3DPipeline.from_pretrained(self.model_path)
+            elif os.path.exists(self.model_path):
+                logging.info(f"📁 Loading local model: {self.model_path}")
+                self.pipeline = TrellisTextTo3DPipeline.from_pretrained(self.model_path)
+            else:
+                # 단순 모델명인 경우 microsoft/ 접두사 추가
+                full_model_name = f"microsoft/{self.model_path}"
+                logging.info(f"📡 Loading HuggingFace model: {full_model_name}")
+                self.pipeline = TrellisTextTo3DPipeline.from_pretrained(full_model_name)
+            
+            # GPU 사용 가능시 GPU로 이동
+            if torch.cuda.is_available():
+                try:
+                    self.pipeline.cuda()
+                    logging.info("✅ Pipeline loaded on GPU successfully!")
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        logging.warning("⚠️ GPU out of memory, using CPU")
+                        self.pipeline.cpu()
+                    else:
+                        raise
+            else:
+                logging.info("ℹ️ GPU not available, using CPU")
+            
+            # 모델 정보 출력
+            self._print_model_info()
+            
         except Exception as e:
-            logging.error(f"Failed to load pipeline: {e}")
+            logging.error(f"❌ Pipeline loading failed: {e}")
             raise
     
-    def load_csv_data(self, csv_path: str) -> pd.DataFrame:
-        """
-        Load object information from CSV file
-        
-        Args:
-            csv_path: CSV file path
-            
-        Returns:
-            DataFrame containing object information
-        """
+    def _is_huggingface_model(self, model_path: str) -> bool:
+        """Check if model path is a HuggingFace model name"""
+        # HuggingFace 모델명 패턴: organization/model-name
+        return '/' in model_path and not os.path.exists(model_path)
+    
+    def _print_model_info(self):
+        """Print model information"""
         try:
-            df = pd.read_csv(csv_path)
-            required_columns = ['object_name', 'text_prompt']
-            
-            # Check required columns
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            if missing_columns:
-                raise ValueError(f"Missing required columns: {missing_columns}")
-            
-            # Remove empty values from required columns
-            df = df.dropna(subset=required_columns)
-            
-            # Add seed column if not exists
-            if 'seed' not in df.columns:
-                df['seed'] = None
-                logging.info("ℹ️  No 'seed' column found, will generate random seeds")
-            
-            # Add params column if not exists
-            if 'params' not in df.columns:
-                df['params'] = None
-                logging.info("ℹ️  No 'params' column found, will use default.yaml")
-            
-            logging.info(f"CSV file loaded successfully: {len(df)} objects")
-            
-            # Update log filename with actual object count
-            self.update_log_filename(len(df))
-            
-            return df
-            
+            if hasattr(self.pipeline, 'models') and self.pipeline.models:
+                logging.info("📊 Model components:")
+                total_params = 0
+                for name, model in self.pipeline.models.items():
+                    if model is not None:
+                        param_count = sum(p.numel() for p in model.parameters())
+                        total_params += param_count
+                        
+                        # 양자화 상태 확인
+                        is_quantized = any(
+                            hasattr(m, '_packed_params') or 'quantized' in str(type(m)).lower()
+                            for m in model.modules()
+                        )
+                        status = "🔧INT8" if is_quantized else "📏FP32"
+                        
+                        logging.info(f"  - {name}: {param_count/1e6:.1f}M params {status}")
+                
+                logging.info(f"📊 Total parameters: {total_params/1e6:.1f}M")
         except Exception as e:
-            logging.error(f"Failed to load CSV file: {e}")
-            raise
-
-    def get_unique_object_name(self, base_name: str) -> str:
-        """
-        Generate unique object name to handle duplicates
+            logging.warning(f"⚠️ Could not get model info: {e}")
+    
+    def generate_unique_name(self, base_prompt: str) -> str:
+        """Generate unique object name based on prompt"""
+        words = base_prompt.lower().split()
+        clean_words = [word.strip('.,!?;:"()[]{}') for word in words if word.strip('.,!?;:"()[]{}')]
+        english_words = [word for word in clean_words if word.isascii() and word.isalpha()]
         
-        Args:
-            base_name: Base object name
-            
-        Returns:
-            Unique object name with counter if needed
-        """
-        # Count occurrences
+        if not english_words:
+            base_name = "object"
+        else:
+            base_name = "_".join(english_words[:3])
+        
         if base_name in self.object_name_counter:
             self.object_name_counter[base_name] += 1
-            unique_name = f"{base_name}_{self.object_name_counter[base_name]:02d}"
-            print(f"🔄 Duplicate object name detected: '{base_name}' → '{unique_name}'")
+            return f"{base_name}_{self.object_name_counter[base_name]:02d}"
         else:
-            self.object_name_counter[base_name] = 0
-            unique_name = base_name
-        
-        return unique_name
-
-    def safe_filename(self, name: str, max_length: int = 50) -> str:
-        """Generate safe filename with automatic conversion"""
-        import re
-        
-        # 1. Convert to lowercase
-        safe_name = str(name).lower().strip()
-        
-        # 2. Replace special characters and spaces with underscore
-        safe_name = re.sub(r'[^\w\-_.]', '_', safe_name)
-        
-        # 3. Compress multiple underscores to single
-        safe_name = re.sub(r'_+', '_', safe_name)
-        
-        # 4. Remove leading and trailing underscores
-        safe_name = safe_name.strip('_')
-        
-        # 5. Limit length
-        safe_name = safe_name[:max_length]
-        
-        # 6. Use default if empty
-        if not safe_name:
-            safe_name = "unnamed_object"
-        
-        return safe_name
+            self.object_name_counter[base_name] = 1
+            return f"{base_name}_01"
     
-    def extract_thumbnail(self, video_path: Path, thumbnail_path: Path) -> bool:
-        """
-        Save middle frame of video as thumbnail
-        
-        Args:
-            video_path: Video file path
-            thumbnail_path: Thumbnail save path
-            
-        Returns:
-            Success status
-        """
+    def process_batch_from_csv(self, csv_path: str, config: Dict, output_dir: str = "./outputs") -> None:
+        """Process batch prompts from CSV file"""
         try:
-            # Read video with imageio
-            reader = imageio.get_reader(str(video_path))
-        
-            # Get total frame count safely
-            try:
-                frame_count = reader.get_length()
-                # Handle special cases
-                if frame_count == float('inf') or frame_count <= 0:
-                    frame_count = 300  # Default for TRELLIS videos (300 frames)
-                frame_count = int(frame_count)
-            except (ValueError, OverflowError, TypeError):
-                # If get_length() fails, use default
-                frame_count = 300
+            df = pd.read_csv(csv_path)
             
-            # Calculate middle frame index
-            middle_frame_idx = min(frame_count // 2, frame_count - 1)
-            middle_frame_idx = max(0, middle_frame_idx)  # Ensure non-negative
+            # CSV 컬럼 확인
+            prompt_column = None
+            if 'text_prompt' in df.columns:
+                prompt_column = 'text_prompt'
+            elif 'prompt' in df.columns:
+                prompt_column = 'prompt'
+            else:
+                logging.error("❌ CSV must have either 'text_prompt' or 'prompt' column")
+                return
             
-            # Get middle frame
-            middle_frame = reader.get_data(middle_frame_idx)
-            reader.close()
+            object_name_column = 'object_name' if 'object_name' in df.columns else None
+            seed_column = 'seed' if 'seed' in df.columns else None
             
-            # Save image
-            imageio.imwrite(str(thumbnail_path), middle_frame)
-            return True
+            # CSV 데이터를 딕셔너리 리스트로 변환
+            csv_data = []
+            for _, row in df.iterrows():
+                if pd.notna(row[prompt_column]):
+                    item = {
+                        'prompt': row[prompt_column],
+                        'object_name': row[object_name_column] if object_name_column and pd.notna(row[object_name_column]) else None,
+                        'seed': (
+                            random.randint(0, 999999)
+                            if seed_column and str(row[seed_column]).lower() == "random"
+                            else int(row[seed_column]) if seed_column and pd.notna(row[seed_column])
+                            else config.get('generation', {}).get('seed', "random")
+                        )                    
+                    }
+                    csv_data.append(item)
+            
+            logging.info(f"📊 Processing {len(csv_data)} items from CSV")
+            self._process_csv_batch(csv_data, config, output_dir)
             
         except Exception as e:
-            logging.error(f"Failed to create thumbnail ({video_path}): {e}")
-            return False
+            logging.error(f"❌ CSV processing failed: {e}")
+            raise
     
-    def run_pipeline_with_timing(self, text_prompt: str, seed: int, config: Dict) -> tuple:
-        """
-        Run pipeline with detailed timing measurement and custom configuration
-        
-        Args:
-            text_prompt: Text prompt for generation
-            seed: Random seed
-            config: YAML configuration dictionary
-            
-        Returns:
-            (outputs, timing_info)
-        """
-        # Check if pipeline is loaded
-        if self.pipeline is None:
-            raise RuntimeError("Pipeline not loaded. Call load_pipeline() first.")
-        
-        timing_info = {}
-        
-        # Total pipeline time
-        total_start = time.time()
-        
-        # Extract parameters from config
-        sparse_params = config.get('sparse_structure_sampler_params', {})
-        slat_params = config.get('slat_sampler_params', {})
-        
-        # Manual step-by-step execution for detailed timing
-        try:
-            with torch.no_grad():  # gradient 계산 비활성화
-                # Step 1: Condition encoding
-                cond_start = time.time()
-                cond = self.pipeline.get_cond([text_prompt])
-                timing_info['condition_encoding_time'] = time.time() - cond_start
-                
-                # Set seed
-                torch.manual_seed(seed)
-                
-                # Step 2: Sparse structure sampling
-                sparse_start = time.time()
-                coords = self.pipeline.sample_sparse_structure(cond, 1, sparse_params)
-                timing_info['sparse_structure_time'] = time.time() - sparse_start
-                
-                # Step 3: SLAT sampling
-                slat_start = time.time()
-                slat = self.pipeline.sample_slat(cond, coords, slat_params)
-                timing_info['slat_sampling_time'] = time.time() - slat_start
-                
-                # Step 4: Decoding
-                decode_start = time.time()
-                outputs = self.pipeline.decode_slat(slat, ['mesh', 'gaussian', 'radiance_field'])
-                timing_info['decoding_time'] = time.time() - decode_start
-                
-                timing_info['total_pipeline_time'] = time.time() - total_start
-            
-            return outputs, timing_info
-            
-        except AttributeError as e:
-            # Fallback to run() method if individual methods are not accessible
-            print(f"⚠️  Individual timing not available, using run() method: {e}")
-            
-            # Use the official run method with custom parameters
-            outputs = self.pipeline.run(
-                prompt=text_prompt,
-                seed=seed,
-                num_samples=1,
-                formats=['mesh', 'gaussian', 'radiance_field'],
-                sparse_structure_sampler_params=sparse_params,
-                slat_sampler_params=slat_params
-            )
-            
-            timing_info['total_pipeline_time'] = time.time() - total_start
-            
-            # Set other timing values to 0 since we can't measure individual steps
-            timing_info['condition_encoding_time'] = 0
-            timing_info['sparse_structure_time'] = 0
-            timing_info['slat_sampling_time'] = 0
-            timing_info['decoding_time'] = 0
-            
-            return outputs, timing_info
-    
-    def generate_single_object(self, object_name: str, text_prompt: str, seed: int, config: Dict, params_filename: str) -> Dict:
-        """
-        Generate single object
-        
-        Args:
-            object_name: Object name
-            text_prompt: Text prompt
-            seed: Seed value
-            config: YAML configuration dictionary
-            params_filename: YAML filename used for generation
-            
-        Returns:
-            Generation result information
-        """
-        start_time = time.time()
-        generation_time = datetime.now()
-        
-        logging.info(f"Generating: {object_name} - {text_prompt}")
-        
-        try:
-            # 3D object generation with detailed timing and custom config
-            outputs, timing_info = self.run_pipeline_with_timing(text_prompt, seed, config)
-            
-            # Video rendering time
-            render_start = time.time()
-            video_gs = render_utils.render_video(outputs['gaussian'][0])['color']
-            video_rf = render_utils.render_video(outputs['radiance_field'][0])['color']
-            video_mesh = render_utils.render_video(outputs['mesh'][0])['normal']
-            render_time = time.time() - render_start
-            
-            # Generate filename
-            safe_name = self.safe_filename(object_name)
-            
-            # Create object-specific folder with seed subfolder
-            object_base_dir = self.output_base_dir / f"{safe_name}"
-            seed_dir = object_base_dir / f"seed_{seed}"
-            seed_dir.mkdir(parents=True, exist_ok=True)
-            
-            # File saving time
-            save_start = time.time()
-            
-            # Video file names
-            video_files = {
-                'gs': f"{safe_name}_gs.mp4",
-                'rf': f"{safe_name}_rf.mp4", 
-                'mesh': f"{safe_name}_mesh.mp4"
-            }
-            
-            # Save video files
-            imageio.mimsave(seed_dir / video_files['gs'], video_gs, fps=30)
-            imageio.mimsave(seed_dir / video_files['rf'], video_rf, fps=30)
-            imageio.mimsave(seed_dir / video_files['mesh'], video_mesh, fps=30)
-            
-            # Save GLB file with custom config
-            glb_filename = f"{safe_name}.glb"
-            postprocessing_config = config.get('postprocessing', {})
-            glb = postprocessing_utils.to_glb(
-                outputs['gaussian'][0],
-                outputs['mesh'][0],
-                simplify=postprocessing_config.get('simplify', 0.95),
-                texture_size=postprocessing_config.get('texture_size', 1024),
-            )
-            glb.export(seed_dir / glb_filename)
-            
-            # Save PLY file
-            ply_filename = f"{safe_name}.ply"
-            outputs['gaussian'][0].save_ply(seed_dir / ply_filename)
-            
-            # Generate thumbnail
-            thumbnail_filename = f"{safe_name}_{seed}.jpg"
-            thumbnail_success = self.extract_thumbnail(
-                seed_dir / video_files['gs'],
-                object_base_dir / thumbnail_filename
-            )
-            
-            save_time = time.time() - save_start
-            total_time = time.time() - start_time
-            
-            # Construct result information
-            result_info = {
-                'object_name': object_name,
-                'seed': seed,
-                'params': params_filename,
-                'total_generation_time_sec': round(total_time, 2),
-                'pipeline_execution_time_sec': round(timing_info['total_pipeline_time'], 2),
-                'condition_encoding_time_sec': round(timing_info['condition_encoding_time'], 2),
-                'sparse_structure_time_sec': round(timing_info['sparse_structure_time'], 2),
-                'slat_sampling_time_sec': round(timing_info['slat_sampling_time'], 2),
-                'decoding_time_sec': round(timing_info['decoding_time'], 2),
-                'rendering_time_sec': round(render_time, 2),
-                'file_saving_time_sec': round(save_time, 2),
-                'text_prompt': text_prompt,
-                'generation_date_kst': generation_time.strftime('%Y-%m-%d %H:%M:%S'),
-                'save_path': str(seed_dir),
-                'glb_filename': glb_filename,
-                'ply_filename': ply_filename,
-                'gs_video_filename': video_files['gs'],
-                'rf_video_filename': video_files['rf'],
-                'mesh_video_filename': video_files['mesh'],
-                'thumbnail_filename': thumbnail_filename if thumbnail_success else '',
-                'generation_status': 'success'
-            }
-            
-            logging.info(f"✅ Generation completed: {object_name} ({total_time:.1f}s)")
-            return result_info
-            
-        except Exception as e:
-            error_time = time.time() - start_time
-            logging.error(f"❌ Generation failed: {object_name} - {e}")
-            
-            return {
-                'object_name': object_name,
-                'seed': seed,
-                'params': params_filename,
-                'total_generation_time_sec': round(error_time, 2),
-                'pipeline_execution_time_sec': 0,
-                'condition_encoding_time_sec': 0,
-                'sparse_structure_time_sec': 0,
-                'slat_sampling_time_sec': 0,
-                'decoding_time_sec': 0,
-                'rendering_time_sec': 0,
-                'file_saving_time_sec': 0,
-                'text_prompt': text_prompt,
-                'generation_date_kst': generation_time.strftime('%Y-%m-%d %H:%M:%S'),
-                'save_path': '',
-                'glb_filename': '',
-                'ply_filename': '',
-                'gs_video_filename': '',
-                'rf_video_filename': '',
-                'mesh_video_filename': '',
-                'thumbnail_filename': '',
-                'generation_status': f'failed: {str(e)}'
-            }
-    
-    def process_batch(self, csv_path: str, start_seed: int = 1) -> None:
-        """
-        Execute batch processing
-        
-        Args:
-            csv_path: Input CSV file path
-            start_seed: Starting seed value (used only when CSV doesn't have seed column or seed is empty)
-        """
-        import random
-        
-        # Load pipeline
-        if self.pipeline is None:
-            self.load_pipeline()
-        
-        # Load CSV data
-        df = self.load_csv_data(csv_path)
-        
-        logging.info(f"\n🚀 Starting batch processing: {len(df)} objects")
-        logging.info("=" * 60)
-        
-        # Process each object
-        for i, (idx, row) in enumerate(df.iterrows()):
-            object_name = str(row['object_name'])
-            text_prompt = str(row['text_prompt'])
-            
-            # Determine seed value
-            has_seed_column = 'seed' in df.columns
-            if has_seed_column:
-                seed_cell_value = row['seed']
-                is_valid_seed = bool(pd.notna(seed_cell_value))
-                
-                if is_valid_seed:
-                    seed_value = str(seed_cell_value).strip()
-                    if seed_value:
-                        # Use user-provided seed
-                        try:
-                            seed = int(float(seed_value))  # Handle both int and float inputs
-                            print(f"🎲 Using user-provided seed: {seed}")
-                        except (ValueError, TypeError):
-                            # Invalid seed value, generate random
-                            seed = random.randint(0, 2147483647)
-                            print(f"⚠️  Invalid seed value '{seed_cell_value}', using random seed: {seed}")
-                    else:
-                        # Empty seed value, generate random
-                        seed = random.randint(0, 2147483647)
-                        print(f"🎲 Generated random seed: {seed}")
-                else:
-                    # NaN seed value, generate random
-                    seed = random.randint(0, 2147483647)
-                    print(f"🎲 Generated random seed: {seed}")
-            else:
-                # Generate random seed
-                seed = random.randint(0, 2147483647)
-                print(f"🎲 Generated random seed: {seed}")
-            
-            # Determine YAML config file
-            has_params_column = 'params' in df.columns
-            if has_params_column:
-                params_cell_value = row['params']
-                is_valid_params = bool(pd.notna(params_cell_value))
-                
-                if is_valid_params:
-                    params_value = str(params_cell_value).strip()
-                    if params_value:
-                        # Use user-provided YAML file
-                        params_filename = params_value
-                        config = self.load_yaml_config(params_filename)
-                        if config is None:
-                            print(f"⚠️  Failed to load {params_filename}, skipping {object_name}")
-                            # Add failed result
-                            failed_result = {
-                                'object_name': object_name,
-                                'seed': seed,
-                                'params': params_filename,
-                                'total_generation_time_sec': 0,
-                                'pipeline_execution_time_sec': 0,
-                                'condition_encoding_time_sec': 0,
-                                'sparse_structure_time_sec': 0,
-                                'slat_sampling_time_sec': 0,
-                                'decoding_time_sec': 0,
-                                'rendering_time_sec': 0,
-                                'file_saving_time_sec': 0,
-                                'text_prompt': text_prompt,
-                                'generation_date_kst': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                'save_path': '',
-                                'glb_filename': '',
-                                'ply_filename': '',
-                                'gs_video_filename': '',
-                                'rf_video_filename': '',
-                                'mesh_video_filename': '',
-                                'thumbnail_filename': '',
-                                'generation_status': f'failed: YAML file not found - {params_filename}'
-                            }
-                            self.results_data.append(failed_result)
-                            print(f"Progress: {i + 1}/{len(df)}")
-                            print("-" * 40)
-                            continue
-                        print(f"📄 Using custom YAML: {params_filename}")
-                    else:
-                        # Empty params value, use default
-                        params_filename = "default.yaml"
-                        config = self.load_yaml_config(params_filename)
-                        print(f"📄 Using default YAML: {params_filename}")
-                else:
-                    # NaN params value, use default
-                    params_filename = "default.yaml"
-                    config = self.load_yaml_config(params_filename)
-                    print(f"📄 Using default YAML: {params_filename}")
-            else:
-                # No params column, use default
-                params_filename = "default.yaml"
-                config = self.load_yaml_config(params_filename)
-                print(f"📄 Using default YAML: {params_filename}")
-            
-            # If config loading failed, skip this object
-            if config is None:
-                print(f"⚠️  Failed to load config, skipping {object_name}")
-                continue
-            
-            result = self.generate_single_object(object_name, text_prompt, seed, config, params_filename)
-            self.results_data.append(result)
-            
-            print(f"Progress: {i + 1}/{len(df)}")
-            print("-" * 40)
-        
-        # Save results CSV
-        self.save_results_csv()
-        
-        print("\n🎉 All objects generated successfully!")
-        self.print_summary()
-    
-    def save_results_csv(self) -> None:
-        """Save results to CSV file with accumulation and sorting"""
-        if not self.results_data:
-            print("No results to save.")
+    def process_batch_from_yaml(self, yaml_path: str, output_dir: str = "./outputs") -> None:
+        """Process batch prompts from YAML configuration"""
+        config = self.load_yaml_config(yaml_path)
+        if not config:
             return
         
-        csv_path = self.output_base_dir / "generation_results.csv"
+        prompts = config.get('prompts', [])
+        if not prompts:
+            logging.error("❌ No prompts found in YAML config")
+            return
         
-        # Load existing data if file exists
-        existing_data = []
-        if csv_path.exists():
+        logging.info(f"📊 Processing {len(prompts)} prompts from YAML")
+        self._process_yaml_batch(prompts, config, output_dir)
+    
+    def _process_csv_batch(self, csv_data: List[Dict], config: Dict, output_dir: str) -> None:
+        """Process a batch of CSV data with individual settings"""
+        # 사용자 지정 출력 디렉토리가 있으면 그것을 사용, 없으면 기본 구조 사용
+        if output_dir != "./outputs":
+            self.output_base = Path(output_dir) / self.model_name / self.current_date
+        
+        # 출력 디렉토리 생성
+        self.output_base.mkdir(parents=True, exist_ok=True)
+        
+        generation_config = config.get('generation', {})
+        output_config = config.get('output', {})
+        postprocessing_config = config.get('postprocessing', {})
+        
+        formats = output_config.get('formats', ['glb'])
+        
+        for i, item in enumerate(csv_data, 1):
+            prompt = item['prompt']
+            predefined_name = item['object_name']
+            seed = item['seed']
+            
+            logging.info(f"\n🎯 [{i}/{len(csv_data)}] Processing: '{prompt}'")
+            if predefined_name:
+                logging.info(f"📋 Object name: {predefined_name}")
+            logging.info(f"🎲 Seed: {seed}")
+            
             try:
-                existing_df = pd.read_csv(csv_path)
-                existing_data = existing_df.to_dict('records')
-                print(f"📄 Loaded existing results: {len(existing_data)} records")
+                # 개별 생성 설정
+                individual_config = generation_config.copy()
+                individual_config['seed'] = seed
+                
+                result = self._generate_single(
+                    prompt=prompt,
+                    predefined_name=predefined_name,
+                    config=individual_config,
+                    formats=formats,
+                    postprocessing_config=postprocessing_config
+                )
+                
+                self.results_data.append(result)
+                logging.info(f"✅ Completed: {result['object_name']}")
+                
             except Exception as e:
-                print(f"Warning: Could not load existing CSV: {e}")
+                error_result = {
+                    'prompt': prompt,
+                    'object_name': predefined_name or 'error',
+                    'seed': seed,
+                    'model_name': self.model_name,
+                    'generation_time': 0.0,
+                    'total_time': 0.0,
+                    'success': False,
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat()
+                }
+                self.results_data.append(error_result)
+                logging.error(f"❌ Failed: {prompt} - {e}")
         
-        # Combine existing and new data
-        all_data = existing_data + self.results_data
-        
-        # Create DataFrame and sort
-        results_df = pd.DataFrame(all_data)
-        
-        # Sort by object_name (alphabetical) then by seed (numerical)
-        results_df = results_df.sort_values(['object_name', 'seed'], ascending=[True, True])
-        
-        # Save CSV file
-        results_df.to_csv(csv_path, index=False, encoding='utf-8')
-        
-        print(f"📊 Results CSV saved: {csv_path} ({len(all_data)} total records)")
-        print(f"   - Previous records: {len(existing_data)}")
-        print(f"   - New records: {len(self.results_data)}")
+        # Save results to CSV
+        self._save_results_to_csv()
     
-    def print_summary(self) -> None:
-        """Print generation results summary"""
+    def _process_yaml_batch(self, prompts: List[str], config: Dict, output_dir: str) -> None:
+        """Process a batch of prompts from YAML"""
+        # 사용자 지정 출력 디렉토리가 있으면 그것을 사용, 없으면 기본 구조 사용
+        if output_dir != "./outputs":
+            self.output_base = Path(output_dir) / self.model_name / self.current_date
+        
+        # 출력 디렉토리 생성
+        self.output_base.mkdir(parents=True, exist_ok=True)
+        
+        generation_config = config.get('generation', {})
+        output_config = config.get('output', {})
+        postprocessing_config = config.get('postprocessing', {})
+        
+        formats = output_config.get('formats', ['glb'])
+        
+        for i, prompt in enumerate(prompts, 1):
+            logging.info(f"\n🎯 [{i}/{len(prompts)}] Processing: '{prompt}'")
+            
+            try:
+                result = self._generate_single(
+                    prompt=prompt,
+                    predefined_name=None,
+                    config=generation_config,
+                    formats=formats,
+                    postprocessing_config=postprocessing_config
+                )
+                
+                self.results_data.append(result)
+                logging.info(f"✅ Completed: {result['object_name']}")
+                
+            except Exception as e:
+                error_result = {
+                    'prompt': prompt,
+                    'object_name': 'error',
+                    'model_name': self.model_name,
+                    'generation_time': 0.0,
+                    'total_time': 0.0,
+                    'success': False,
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat()
+                }
+                self.results_data.append(error_result)
+                logging.error(f"❌ Failed: {prompt} - {e}")
+        
+        # Save results to CSV
+        self._save_results_to_csv()
+    
+    def _generate_single(self, prompt: str, predefined_name: Optional[str], config: Dict, 
+                        formats: List[str], postprocessing_config: Dict) -> Dict:
+        """Generate single 3D object"""
+        start_time = time.time()
+        
+        # 객체 이름 결정
+        if predefined_name:
+            object_name = predefined_name
+        else:
+            object_name = self.generate_unique_name(prompt)
+        
+        # 시드 정보
+        seed_val = config.get('seed', "random")
+        if isinstance(seed_val, str) and seed_val.lower() == "random":
+            seed = random.randint(0, 999999)
+        else:
+            seed = int(seed_val)
+        
+        # 개별 객체 디렉토리 생성: {base_output}/{object_name}/
+        object_dir = self.output_base / object_name
+        object_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generation timing
+        gen_start = time.time()
+        
+        try:
+            outputs = self.pipeline.run(
+                prompt,
+                seed=seed,
+                sparse_structure_sampler_params=config.get('sparse_structure_sampler_params', {}),
+                slat_sampler_params=config.get('slat_sampler_params', {})
+            )
+        except Exception as e:
+            logging.error(f"❌ Pipeline execution failed: {e}")
+            raise
+            
+        generation_time = time.time() - gen_start
+        
+        # Render different video types
+        render_start = time.time()
+        video_gs = None
+        video_rf = None
+        video_mesh = None
+        
+        try:
+            if 'mp4' in formats:
+                video_gs = render_utils.render_video(outputs['gaussian'][0])['color']
+                video_rf = render_utils.render_video(outputs['radiance_field'][0])['color']
+                video_mesh = render_utils.render_video(outputs['mesh'][0])['normal']
+        except Exception as e:
+            logging.warning(f"⚠️ Video rendering failed: {e}")
+        
+        render_time = time.time() - render_start
+        
+        # Save outputs in requested formats
+        saved_files = []
+        save_start = time.time()
+        
+        try:
+            # GLB 파일: {object_name}_{model_name}_{seed}.glb
+            if 'glb' in formats:
+                glb_filename = f"{object_name}_{self.model_name}_{seed}.glb"
+                glb_path = object_dir / glb_filename
+                glb = postprocessing_utils.to_glb(
+                    outputs['gaussian'][0],
+                    outputs['mesh'][0],
+                    simplify=postprocessing_config.get('simplify', 0.95),
+                    texture_size=postprocessing_config.get('texture_size', 1024)
+                )
+                glb.export(str(glb_path))
+                saved_files.append(str(glb_path))
+                logging.info(f"💾 GLB saved: {glb_path}")
+            
+            # PLY 파일: {object_name}_{model_name}_{seed}.ply
+            if 'ply' in formats:
+                ply_filename = f"{object_name}_{self.model_name}_{seed}.ply"
+                ply_path = object_dir / ply_filename
+                outputs['gaussian'][0].save_ply(str(ply_path))
+                saved_files.append(str(ply_path))
+                logging.info(f"💾 PLY saved: {ply_path}")
+            
+            # MP4 파일들: {object_name}_{model_name}_{seed}_gs/rf/mesh.mp4
+            if 'mp4' in formats:
+                if video_gs is not None:
+                    gs_filename = f"{object_name}_{self.model_name}_{seed}_gs.mp4"
+                    gs_path = object_dir / gs_filename
+                    imageio.mimsave(str(gs_path), video_gs, fps=30)
+                    saved_files.append(str(gs_path))
+                    logging.info(f"💾 GS video saved: {gs_path}")
+                
+                if video_rf is not None:
+                    rf_filename = f"{object_name}_{self.model_name}_{seed}_rf.mp4"
+                    rf_path = object_dir / rf_filename
+                    imageio.mimsave(str(rf_path), video_rf, fps=30)
+                    saved_files.append(str(rf_path))
+                    logging.info(f"💾 RF video saved: {rf_path}")
+                
+                if video_mesh is not None:
+                    mesh_filename = f"{object_name}_{self.model_name}_{seed}_mesh.mp4"
+                    mesh_path = object_dir / mesh_filename
+                    imageio.mimsave(str(mesh_path), video_mesh, fps=30)
+                    saved_files.append(str(mesh_path))
+                    logging.info(f"💾 Mesh video saved: {mesh_path}")
+            
+            # 썸네일 생성: {object_name}_{model_name}_{seed}.jpg
+            if 'jpg' in formats or video_gs is not None:
+                try:
+                    base_filename = f"{object_name}_{self.model_name}_{seed}"
+                    frame_times = [4, 5, 6, 10]  # seconds
+                    fps = 30  # same as render
+
+                    from PIL import Image
+                    for sec in frame_times:
+                        frame_idx = sec * fps
+                        if video_gs is not None and len(video_gs) > frame_idx:
+                            thumbnail_img = Image.fromarray(video_gs[frame_idx])
+                            thumbnail_path = object_dir / f"{base_filename}_gs_{sec:03d}s.jpg"
+                            thumbnail_img.save(str(thumbnail_path), "JPEG", quality=90)
+                            saved_files.append(str(thumbnail_path))
+                            logging.info(f"💾 Thumbnail saved: {thumbnail_path}")
+                        else:
+                            logging.warning(f"⚠️ Frame {frame_idx} for {sec}s not available in video_gs")
+                except Exception as e:
+                    logging.warning(f"⚠️ Thumbnail generation failed: {e}")
+
+                
+        except Exception as e:
+            logging.error(f"❌ File saving failed: {e}")
+            logging.error(f"   Tried to save to: {object_dir}")
+            raise
+        
+        save_time = time.time() - save_start
+        total_time = time.time() - start_time
+        
+        return {
+            'prompt': prompt,
+            'object_name': object_name,
+            'model_name': self.model_name,
+            'seed': seed,
+            'generation_time': round(generation_time, 2),
+            'render_time': round(render_time, 2),
+            'save_time': round(save_time, 2),
+            'total_time': round(total_time, 2),
+            'success': True,
+            'saved_files': saved_files,
+            'save_path': str(object_dir),
+            'timestamp': datetime.now().isoformat()
+        }
+    
+    def _save_results_to_csv(self) -> None:
+        """Save results to CSV file with specified naming format"""
         if not self.results_data:
             return
         
-        df = pd.DataFrame(self.results_data)
-        successful = df[df['generation_status'] == 'success']
-        failed = df[df['generation_status'] != 'success']
+        # CSV 파일명: results_{model_name}_{current_date}_{time}.csv
+        current_time = datetime.now().strftime('%H%M%S')
+        csv_filename = f"results_{self.model_name}_{self.current_date}_{current_time}.csv"
+        csv_path = self.output_base / csv_filename
         
-        print("\n📈 Generation Results Summary:")
-        print(f"✅ Successful: {len(successful)} objects")
-        print(f"❌ Failed: {len(failed)} objects")
+        results_df = pd.DataFrame(self.results_data)
+        results_df.to_csv(csv_path, index=False)
         
-        if len(successful) > 0:
-            avg_total_time = successful['total_generation_time_sec'].mean()
-            avg_pipeline_time = successful['pipeline_execution_time_sec'].mean()
-            total_time = successful['total_generation_time_sec'].sum()
-            print(f"⏱️  Average total time: {avg_total_time:.1f}s")
-            print(f"⏱️  Average pipeline time: {avg_pipeline_time:.1f}s")
-            print(f"⏱️  Total generation time: {total_time:.1f}s")
-            
-            # Detailed timing breakdown
-            print("\n📊 Timing Breakdown (Average):")
-            print(f"  - Condition encoding: {successful['condition_encoding_time_sec'].mean():.2f}s")
-            print(f"  - Sparse structure: {successful['sparse_structure_time_sec'].mean():.2f}s")
-            print(f"  - SLAT sampling: {successful['slat_sampling_time_sec'].mean():.2f}s")
-            print(f"  - Decoding: {successful['decoding_time_sec'].mean():.2f}s")
-            print(f"  - Rendering: {successful['rendering_time_sec'].mean():.2f}s")
-            print(f"  - File saving: {successful['file_saving_time_sec'].mean():.2f}s")
+        logging.info(f"📊 Results saved to: {csv_path}")
         
-        if len(failed) > 0:
-            print(f"\n❌ Failed objects:")
-            for _, row in failed.iterrows():
-                print(f"  - {row['object_name']}: {row['generation_status']}")
+        # Print summary
+        successful = sum(1 for r in self.results_data if r.get('success', False))
+        total = len(self.results_data)
+        avg_time = sum(r.get('generation_time', 0) for r in self.results_data if r.get('success', False)) / max(successful, 1)
         
-        print(f"\n📁 Results saved to: {self.output_base_dir}")
+        logging.info(f"✅ Summary: {successful}/{total} successful, avg time: {avg_time:.1f}s")
+        logging.info(f"📁 All files saved in: {self.output_base}")
 
 
 def main():
-    """Main execution function"""
-    # Usage example
-    csv_file = "input_objects.csv"  # Input CSV file path
+    parser = argparse.ArgumentParser(
+        description="TRELLIS Text-to-3D Batch Inference Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Create default config
+  python trellis_inference.py --create_default
+  
+  # Use default HuggingFace model with YAML
+  python trellis_inference.py --config default.yaml
+  
+  # Use specific model with custom base path
+  python trellis_inference.py --model_path TRELLIS-text-large --config default.yaml --base_output /custom/path
+  
+  # Process CSV input with custom output
+  python trellis_inference.py --csv prompts.csv --output /mnt/nas/tmp/nayeon --base_output /mnt/nas/tmp/nayeon
+        """
+    )
+    parser.add_argument(
+        '--model_path', 
+        type=str, 
+        default='microsoft/TRELLIS-text-xlarge',
+        help='Model path (local path or HuggingFace model name)'
+    )
     
-    # Create manager
-    manager = TrellisInferenceManager()
+    parser.add_argument(
+        '--config', 
+        type=str, 
+        help='YAML configuration file path'
+    )
     
-    # Execute batch processing
+    parser.add_argument(
+        '--csv', 
+        type=str, 
+        help='CSV file path with prompts'
+    )
+    
+    parser.add_argument(
+        '--output', 
+        type=str, 
+        default='./outputs',
+        help='Output directory for this run'
+    )
+    
+    parser.add_argument(
+        '--base_output', 
+        type=str, 
+        default='/mnt/nas/tmp/nayeon',
+        help='Base output directory for structured file organization'
+    )
+    
+    parser.add_argument(
+        '--create_default', 
+        action='store_true',
+        help='Create default.yaml configuration file and exit'
+    )
+    
+    args = parser.parse_args()
+    print("args: ", args)
+
+    # Create default config and exit
+    if args.create_default:
+        try:
+            manager = TrellisInferenceManager(base_output_dir=args.base_output)
+            manager.create_default_yaml()
+            print("✅ Created default.yaml configuration file")
+        except Exception as e:
+            print(f"❌ Error creating default config: {e}")
+        return
+    
+    # Validate input arguments
+    if not args.config and not args.csv:
+        print("❌ Error: Either --config or --csv must be specified")
+        print("💡 Use --create_default to create a default configuration file")
+        return
+    
     try:
-        manager.process_batch(csv_file, start_seed=1)
-    except FileNotFoundError:
-        print(f"❌ CSV file not found: {csv_file}")
-        print("📝 Please prepare a CSV file with the following format:")
-        print("   - object_name: Object name (English only)")
-        print("   - text_prompt: Text prompt for generation (English only)")
-        print("   - seed: Random seed (optional, leave empty for random generation)")
-        print("   - params: YAML config file (optional, leave empty for default.yaml)")
+        # Initialize manager with specified model path and base output
+        print("Initialize model path: ", args.model_path)
+        manager = TrellisInferenceManager(model_path=args.model_path, base_output_dir=args.base_output)
+        print("Load pipeline")
+        manager.load_pipeline()
         
-        # Create sample CSV file
-        sample_data = {
-            'object_name': [
-                'vintage_camcorder',
-                'lens_cap',
-                'camera_lens',
-                'human_hand',
-                'retro_camera'
-            ],
-            'text_prompt': [
-                'A vintage camcorder with buttons and lens',
-                'A black circular lens cap for camera',
-                'A camera lens with adjustable aperture', 
-                'A human hand reaching forward',
-                'A retro video camera from the 1990s'
-            ],
-            'seed': [
-                42,
-                '',  # Empty - will use random
-                1234567890,
-                '',  # Empty - will use random  
-                999
-            ],
-            'params': [
-                'default.yaml',
-                '',  # Empty - will use default.yaml
-                'custom_high_quality.yaml',
-                'default.yaml',
-                ''  # Empty - will use default.yaml
-            ]
-        }
-        sample_df = pd.DataFrame(sample_data)
-        sample_df.to_csv('sample_input.csv', index=False)
-        print("📋 Sample file created: sample_input.csv")
+        # Process based on input type
+        if args.csv:
+            # Create minimal config for CSV processing
+            config = {
+                'generation': {'seed': "random"},
+                'output': {'formats': ['glb', 'ply', 'mp4', 'jpg']},
+                'postprocessing': {'simplify': 0.95, 'texture_size': 1024}
+            }
+            manager.process_batch_from_csv(args.csv, config, args.output)
+        elif args.config:
+            manager.process_batch_from_yaml(args.config, args.output)
+        
+        print(f"\n🎉 Batch processing completed!")
+        print(f"📁 Files saved in: {manager.output_base}")
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return 1
+
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())

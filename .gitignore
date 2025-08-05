@@ -4,15 +4,15 @@
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
 # datasets and ckpts
-datasets
-*.safetensors
-microsoft/**/*.safetensors
-quantization_results
 trellis/representations/mesh/flexicubes
+datasets
 input_data
+*.safetensors
 *.npz
 *.zip
-
+*.glb
+*.ply
+*.mp4
 
 # User-specific files
 *.rsuser

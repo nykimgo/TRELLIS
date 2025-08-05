@@ -39,9 +39,14 @@ class Pipeline:
         _models = {}
         for k, v in args['models'].items():
             try:
+                print(f'****** Loading {path}/{v}')
                 _models[k] = models.from_pretrained(f"{path}/{v}")
-            except:
+                print(f'MODEL {k} LOADING SUCCESS!')
+            except Exception as e:
+                print(f'MODEL {k} LOADING FAILED!')
+                print(f'****** Loading {v}')
                 _models[k] = models.from_pretrained(v)
+                print(f'MODEL {k} LOADING SUCCESS!')
 
         new_pipeline = Pipeline(_models)
         new_pipeline._pretrained_args = args
