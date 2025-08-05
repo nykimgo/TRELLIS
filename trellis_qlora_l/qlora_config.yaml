@@ -1,0 +1,113 @@
+# TRELLIS QLoRA 설정 파일
+
+# 기본 모델 설정
+model_name: "text-large"
+model_path: "/home/sr/TRELLIS/microsoft/TRELLIS-text-large"
+output_dir: "./qlora_experiments"
+experiment_name: null  # 자동 생성
+
+# QLoRA 설정
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.1
+lora_target_modules:
+  - "q_proj"
+  - "k_proj" 
+  - "v_proj"
+  - "o_proj"
+lora_bias: "none"
+
+# 양자화 설정
+quantization_config:
+  load_in_4bit: true
+  bnb_4bit_compute_dtype: "float16"
+  bnb_4bit_use_double_quant: true
+  bnb_4bit_quant_type: "nf4"
+
+# 훈련 설정
+batch_size: 2
+batch_size_per_gpu: null  # 자동 계산
+gradient_accumulation_steps: 4
+max_steps: 10000
+learning_rate: 1.0e-4
+weight_decay: 0.01
+warmup_steps: 500
+
+# 옵티마이저 설정
+optimizer_type: "adamw"
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1.0e-8
+
+# 스케줄러 설정
+lr_scheduler_type: "cosine_with_warmup"
+cosine_annealing_min_lr: 1.0e-6
+
+# 정규화 설정
+gradient_clipping: 1.0
+
+# 시스템 설정
+num_gpus: 4
+fp16: true
+fp16_opt_level: "O1"
+gradient_checkpointing: true
+dataloader_num_workers: 4
+dataloader_pin_memory: true
+
+# 체크포인트 설정
+save_steps: 1000
+save_total_limit: 3
+resume_from_checkpoint: null
+
+# 로깅 설정
+logging_steps: 100
+eval_steps: 1000
+use_tensorboard: true
+log_level: "INFO"
+
+# 데이터셋 설정
+dataset_path: "/home/sr/TRELLIS/datasets/HSSD"  # HSSD 데이터셋 경로
+dataset_type: "hssd"  # hssd, custom, dummy
+max_seq_length: 2048
+dataset_split_ratio: 0.9
+
+# HSSD 전용 설정
+hssd_config:
+  data_root: "/home/sr/TRELLIS/datasets/HSSD"
+  splits: ["train", "val"]  # 사용할 데이터 분할
+  use_rendered: true        # 렌더링된 이미지 사용
+  use_voxelized: true      # 복셀 데이터 사용
+  use_latent: true         # 인코딩된 latent 사용
+  max_samples_per_split:   # 각 분할에서 최대 1만개 샘플
+
+# EMA 설정
+use_ema: true
+ema_decay: 0.999
+
+# 기타 설정
+seed: 42
+deterministic: true
+
+# 실험별 설정 (예시)
+experiments:
+  # 낮은 rank 실험
+  low_rank:
+    lora_rank: 8
+    lora_alpha: 16
+    learning_rate: 2.0e-4
+    max_steps: 5000
+  
+  # 높은 rank 실험  
+  high_rank:
+    lora_rank: 64
+    lora_alpha: 128
+    learning_rate: 5.0e-5
+    max_steps: 15000
+  
+  # 빠른 실험
+  quick_test:
+    lora_rank: 16
+    lora_alpha: 32
+    max_steps: 1000
+    save_steps: 500
+    eval_steps: 500

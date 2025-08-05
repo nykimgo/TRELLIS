@@ -391,9 +391,46 @@ class TrellisInferenceManager:
         
         # Save results to CSV
         self._save_results_to_csv()
-    
-    def _generate_single(self, prompt: str, predefined_name: Optional[str], config: Dict, 
-                        formats: List[str], postprocessing_config: Dict) -> Dict:
+
+    def _get_unique_filename(self, directory: Path, base_filename: str) -> str:
+        """
+        중복되는 파일명이 있으면 파일명 뒤에 001, 002, ... 형태로 숫자를 붙여서 유니크한 파일명 반환
+        
+        Args:
+            directory: 파일이 저장될 디렉토리
+            base_filename: 기본 파일명 (확장자 포함)
+        
+        Returns:
+            유니크한 파일명 (확장자 포함)
+        """
+        filepath = directory / base_filename
+        
+        if not filepath.exists():
+            return base_filename
+        
+        # 파일명과 확장자 분리
+        name_part = base_filename.rsplit('.', 1)[0]  # 확장자 제거
+        ext_part = '.' + base_filename.rsplit('.', 1)[1] if '.' in base_filename else ''  # 확장자
+        
+        # 중복되는 경우 숫자 접미사 추가
+        counter = 1
+        while True:
+            new_filename = f"{name_part}_{counter:03d}{ext_part}"
+            new_filepath = directory / new_filename
+            
+            if not new_filepath.exists():
+                return new_filename
+            
+            counter += 1
+            
+            # 안전장치: 999개를 넘어가면 중단
+            if counter > 999:
+                # 타임스탬프를 추가하여 강제로 유니크하게 만듦
+                timestamp = datetime.now().strftime('%H%M%S')
+                new_filename = f"{name_part}_{timestamp}{ext_part}"
+                return new_filename
+
+    def _generate_single(self, prompt: str, predefined_name: Optional[str], config: Dict, formats: List[str], postprocessing_config: Dict) -> Dict:
         """Generate single 3D object"""
         start_time = time.time()
         
@@ -451,10 +488,12 @@ class TrellisInferenceManager:
         save_start = time.time()
         
         try:
-            # GLB 파일: {object_name}_{model_name}_{seed}.glb
+            # GLB 파일: {object_name}_{model_name}_{seed}.glb (중복 시 숫자 추가)
             if 'glb' in formats:
-                glb_filename = f"{object_name}_{self.model_name}_{seed}.glb"
+                base_filename = f"{object_name}_{self.model_name}_{seed}.glb"
+                glb_filename = self._get_unique_filename(object_dir, base_filename)
                 glb_path = object_dir / glb_filename
+                
                 glb = postprocessing_utils.to_glb(
                     outputs['gaussian'][0],
                     outputs['mesh'][0],
@@ -463,43 +502,47 @@ class TrellisInferenceManager:
                 )
                 glb.export(str(glb_path))
                 saved_files.append(str(glb_path))
-                logging.info(f"💾 GLB saved: {glb_path}")
+                logging.info(f"💾 GLB saved: {glb_filename}")
             
-            # PLY 파일: {object_name}_{model_name}_{seed}.ply
+            # PLY 파일: {object_name}_{model_name}_{seed}.ply (중복 시 숫자 추가)
             if 'ply' in formats:
-                ply_filename = f"{object_name}_{self.model_name}_{seed}.ply"
+                base_filename = f"{object_name}_{self.model_name}_{seed}.ply"
+                ply_filename = self._get_unique_filename(object_dir, base_filename)
                 ply_path = object_dir / ply_filename
+                
                 outputs['gaussian'][0].save_ply(str(ply_path))
                 saved_files.append(str(ply_path))
-                logging.info(f"💾 PLY saved: {ply_path}")
+                logging.info(f"💾 PLY saved: {ply_filename}")
             
-            # MP4 파일들: {object_name}_{model_name}_{seed}_gs/rf/mesh.mp4
+            # MP4 파일들: {object_name}_{model_name}_{seed}_gs/rf/mesh.mp4 (중복 시 숫자 추가)
             if 'mp4' in formats:
                 if video_gs is not None:
-                    gs_filename = f"{object_name}_{self.model_name}_{seed}_gs.mp4"
+                    base_filename = f"{object_name}_{self.model_name}_{seed}_gs.mp4"
+                    gs_filename = self._get_unique_filename(object_dir, base_filename)
                     gs_path = object_dir / gs_filename
                     imageio.mimsave(str(gs_path), video_gs, fps=30)
                     saved_files.append(str(gs_path))
-                    logging.info(f"💾 GS video saved: {gs_path}")
+                    logging.info(f"💾 GS video saved: {gs_filename}")
                 
                 if video_rf is not None:
-                    rf_filename = f"{object_name}_{self.model_name}_{seed}_rf.mp4"
+                    base_filename = f"{object_name}_{self.model_name}_{seed}_rf.mp4"
+                    rf_filename = self._get_unique_filename(object_dir, base_filename)
                     rf_path = object_dir / rf_filename
                     imageio.mimsave(str(rf_path), video_rf, fps=30)
                     saved_files.append(str(rf_path))
-                    logging.info(f"💾 RF video saved: {rf_path}")
+                    logging.info(f"💾 RF video saved: {rf_filename}")
                 
                 if video_mesh is not None:
-                    mesh_filename = f"{object_name}_{self.model_name}_{seed}_mesh.mp4"
+                    base_filename = f"{object_name}_{self.model_name}_{seed}_mesh.mp4"
+                    mesh_filename = self._get_unique_filename(object_dir, base_filename)
                     mesh_path = object_dir / mesh_filename
                     imageio.mimsave(str(mesh_path), video_mesh, fps=30)
                     saved_files.append(str(mesh_path))
-                    logging.info(f"💾 Mesh video saved: {mesh_path}")
+                    logging.info(f"💾 Mesh video saved: {mesh_filename}")
             
-            # 썸네일 생성: {object_name}_{model_name}_{seed}.jpg
+            # 썸네일 생성: {object_name}_{model_name}_{seed}_gs_{sec}s.jpg (중복 시 숫자 추가)
             if 'jpg' in formats or video_gs is not None:
                 try:
-                    base_filename = f"{object_name}_{self.model_name}_{seed}"
                     frame_times = [4, 5, 6, 10]  # seconds
                     fps = 30  # same as render
 
@@ -507,17 +550,19 @@ class TrellisInferenceManager:
                     for sec in frame_times:
                         frame_idx = sec * fps
                         if video_gs is not None and len(video_gs) > frame_idx:
+                            base_filename = f"{object_name}_{self.model_name}_{seed}_gs_{sec:03d}s.jpg"
+                            thumbnail_filename = self._get_unique_filename(object_dir, base_filename)
+                            thumbnail_path = object_dir / thumbnail_filename
+                            
                             thumbnail_img = Image.fromarray(video_gs[frame_idx])
-                            thumbnail_path = object_dir / f"{base_filename}_gs_{sec:03d}s.jpg"
                             thumbnail_img.save(str(thumbnail_path), "JPEG", quality=90)
                             saved_files.append(str(thumbnail_path))
-                            logging.info(f"💾 Thumbnail saved: {thumbnail_path}")
+                            logging.info(f"💾 Thumbnail saved: {thumbnail_filename}")
                         else:
                             logging.warning(f"⚠️ Frame {frame_idx} for {sec}s not available in video_gs")
                 except Exception as e:
                     logging.warning(f"⚠️ Thumbnail generation failed: {e}")
-
-                
+                    
         except Exception as e:
             logging.error(f"❌ File saving failed: {e}")
             logging.error(f"   Tried to save to: {object_dir}")
@@ -529,8 +574,8 @@ class TrellisInferenceManager:
         return {
             'prompt': prompt,
             'object_name': object_name,
-            'model_name': self.model_name,
             'seed': seed,
+            'model_name': self.model_name,
             'generation_time': round(generation_time, 2),
             'render_time': round(render_time, 2),
             'save_time': round(save_time, 2),
@@ -540,7 +585,8 @@ class TrellisInferenceManager:
             'save_path': str(object_dir),
             'timestamp': datetime.now().isoformat()
         }
-    
+
+
     def _save_results_to_csv(self) -> None:
         """Save results to CSV file with specified naming format"""
         if not self.results_data:

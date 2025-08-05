@@ -1,8 +1,5 @@
 ﻿object_name,seed,params,matched_image,text_prompt
-bookshelf,,,,A wooden bookshelf with carved details and adjustable shelves.
-wooden_chair,,,,A wooden rocking chair with a woven seat and back.
-radio,,,,"Portable transistor radio, dark cover, speaker grille, brand logo on front."
-twisted_tree,,,,"The tree has stylized, rounded canopies made up of layered, scale-like leaves in shades of green. Its trunk is twisted."
-brick_house,,,,Two-story brick house with red roof and fence.
-lantern,,,,Rustic lantern with a flickering flame.
-motorcycle,,,,A shiny silver and red motorcycle with a leather seat and chrome accents.
+pig_var,787081,,,The pig eating the fodder
+pig_var,787081,,,The pig eating the feed
+pig_var,787081,,,The pig is eating food happily
+pig_var,787081,,,"A low-poly cute pig eating fodder on the ground. It is chubby and stylized, with short legs and a pink snout."
