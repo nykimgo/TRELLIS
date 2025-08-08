@@ -33,6 +33,7 @@ python train.py \
   --config configs/generation/slat_flow_txt_dit_L_64l8p2_qlora.json \
   --output_dir outputs/slat_flow_txt_dit_L_64l8p2_qlora \
   --data_dir datasets/HSSD
+```
 
 **03/25/2025**
 - Release training code.
