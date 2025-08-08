@@ -217,12 +217,47 @@ class ElasticModuleMixin:
         self._memory_controller = memory_controller
         
     def forward(self, *args, **kwargs):
+        import torch # FOR DEBUGGING
         if self._memory_controller is None or not torch.is_grad_enabled() or not self.training:
+            # ========================= DEBUGGING CODE START =========================
+            if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                print("\n\n" + "="*60)
+                print("🕵️  DEBUG: JUST BEFORE super().forward() in ElasticModuleMixin")
+                print("utils/elastic_utils.py: line 226, if self._memory_controller is None or not torch.is_grad_enabled() or not self.training:")
+                print(f"Passing {len(args)} positional args (args):")
+                for i, arg in enumerate(args):
+                    print(f"  - args[{i}]: type={type(arg)}", end="")
+                    if isinstance(arg, torch.Tensor):
+                        print(f", shape={arg.shape}, device={arg.device}")
+                    elif isinstance(arg, dict):
+                        print(f", DICT KEYS={list(arg.keys())}")
+                    else:
+                        print()
+                print(f"Passing {len(kwargs)} keyword args (kwargs): {list(kwargs.keys())}")
+                print("="*60 + "\n\n")
+            # ========================== DEBUGGING CODE END ==========================
             ret = super().forward(*args, **kwargs)
         else:
             input_size = self._get_input_size(*args, **kwargs)
             mem_ratio = self._memory_controller.get_mem_ratio(input_size)
             with self.with_mem_ratio(mem_ratio) as exact_mem_ratio:
+                # ========================= DEBUGGING CODE START =========================
+                if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                    print("\n\n" + "="*60)
+                    print("utils/elastic_utils.py: line 247, else:")
+                    print("🕵️  DEBUG: JUST BEFORE super().forward() in ElasticModuleMixin")
+                    print(f"Passing {len(args)} positional args (args):")
+                    for i, arg in enumerate(args):
+                        print(f"  - args[{i}]: type={type(arg)}", end="")
+                        if isinstance(arg, torch.Tensor):
+                            print(f", shape={arg.shape}, device={arg.device}")
+                        elif isinstance(arg, dict):
+                            print(f", DICT KEYS={list(arg.keys())}")
+                        else:
+                            print()
+                    print(f"Passing {len(kwargs)} keyword args (kwargs): {list(kwargs.keys())}")
+                    print("="*60 + "\n\n")
+                # ========================== DEBUGGING CODE END ==========================
                 ret = super().forward(*args, **kwargs)
             self._memory_controller.update_run_states(input_size, exact_mem_ratio)
         return ret

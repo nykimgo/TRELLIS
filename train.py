@@ -13,6 +13,8 @@ import random
 from trellis import models, datasets, trainers
 from trellis.utils.dist_utils import setup_dist
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="spconv")
 
 def find_ckpt(cfg):
     # Load checkpoint
@@ -56,6 +58,70 @@ def get_model_summary(model):
     return model_summary
 
 
+def apply_qlora_if_configured(cfg, model_dict, rank=0):
+    """Apply QLoRA to models if configured in the config file."""
+    if 'qlora' not in cfg:
+        return model_dict
+    
+    qlora_config = cfg.qlora
+    target_models = qlora_config.get('target_models', [])
+    
+    if not target_models:
+        if rank == 0:
+            print("QLoRA configuration found but no target_models specified. Skipping QLoRA.")
+        return model_dict
+    
+    # QLoRA utils import
+    from trellis.utils import apply_qlora
+    
+    if rank == 0:  # 마스터 프로세스에서만 출력
+        print(f"\n🔧 Applying QLoRA to models: {target_models}")
+        print(f"   - LoRA rank (r): {qlora_config.get('r', 8)}")
+        print(f"   - LoRA alpha: {qlora_config.get('lora_alpha', 16)}")
+        print(f"   - LoRA dropout: {qlora_config.get('lora_dropout', 0.0)}")
+        print(f"   - Quantization: {qlora_config.get('quantize', True)}")
+    
+    for model_name in target_models:
+        if model_name in model_dict:
+            if rank == 0:
+                print(f"\n📦 Applying QLoRA to {model_name}...")
+                original_params = sum(p.numel() for p in model_dict[model_name].parameters())
+            
+            model_dict[model_name] = apply_qlora(
+                model_dict[model_name],
+                r=qlora_config.get('r', 8),
+                lora_alpha=qlora_config.get('lora_alpha', 16),
+                lora_dropout=qlora_config.get('lora_dropout', 0.0),
+                quantize=qlora_config.get('quantize', True),
+                use_target_patterns=qlora_config.get('use_target_patterns', True),
+                verbose=(rank == 0),  # 마스터 프로세스에서만 상세 출력
+            )
+            
+            # DDP 호환성을 위한 추가 디바이스 체크
+            model = model_dict[model_name]
+            devices = {p.device for p in model.parameters()}
+            if len(devices) > 1:
+                if rank == 0:
+                    print(f"   ⚠️  Warning: {model_name} has parameters on multiple devices: {devices}")
+                    print("   🔧 Moving all parameters to CUDA...")
+                model = model.cuda()
+                model_dict[model_name] = model
+            
+            if rank == 0:
+                # 파라미터 수 비교
+                qlora_params = sum(p.numel() for p in model_dict[model_name].parameters() if p.requires_grad)
+                print(f"   ✅ {model_name}: {original_params:,} → {qlora_params:,} trainable parameters")
+                print(f"   📊 Parameter reduction: {(1 - qlora_params/original_params)*100:.2f}%")
+                
+                # 디바이스 확인
+                final_devices = {p.device for p in model_dict[model_name].parameters()}
+                print(f"   🔍 Final devices: {final_devices}")
+        else:
+            if rank == 0:
+                print(f"   ⚠️  Warning: Model '{model_name}' not found in model_dict")
+    
+    return model_dict
+
 def main(local_rank, cfg):
     # Set up distributed training
     rank = cfg.node_rank * cfg.num_gpus + local_rank
@@ -74,18 +140,23 @@ def main(local_rank, cfg):
         name: getattr(models, model.name)(**model.args).cuda()
         for name, model in cfg.models.items()
     }
-
-    # Model summary
+    
+    # 🆕 QLoRA 적용 (config에 qlora 섹션이 있으면)
+    model_dict = apply_qlora_if_configured(cfg, model_dict, rank)
+    
+    '''
+    # Model summary (QLoRA 적용 후)
     if rank == 0:
         for name, backbone in model_dict.items():
             model_summary = get_model_summary(backbone)
             print(f'\n\nBackbone: {name}\n' + model_summary)
             with open(os.path.join(cfg.output_dir, f'{name}_model_summary.txt'), 'w') as fp:
                 print(model_summary, file=fp)
+    '''
 
-    # Build trainer
+    # Build trainer (기존과 동일)
     trainer = getattr(trainers, cfg.trainer.name)(model_dict, dataset, **cfg.trainer.args, output_dir=cfg.output_dir, load_dir=cfg.load_dir, step=cfg.load_ckpt)
-
+    
     # Train
     if not cfg.tryrun:
         if cfg.profile:

@@ -1,0 +1,404 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/trellis_qlora/__init__.py b/trellis_qlora/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/trellis_qlora/data_loader.py b/trellis_qlora/data_loader.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..db3f633f851cffe7b8ecf71fc9ed71cfbbcddef1
+--- /dev/null
++++ b/trellis_qlora/data_loader.py
+@@ -0,0 +1,38 @@
++"""간단한 텍스트 데이터셋 로더"""
++
++from pathlib import Path
++from typing import List
++
++import json
++from torch.utils.data import Dataset
++
++
++class TextDataset(Dataset):
++    """HSSD와 같은 JSONL 형식 텍스트 데이터셋 로더"""
++
++    def __init__(self, data_dir: str, tokenizer, max_length: int = 256) -> None:
++        self.data_dir = Path(data_dir)
++        self.tokenizer = tokenizer
++        self.max_length = max_length
++        self.files: List[Path] = sorted(self.data_dir.glob("*.json"))
++        if not self.files:
++            raise FileNotFoundError(f"데이터셋을 찾을 수 없습니다: {data_dir}")
++
++    def __len__(self) -> int:
++        return len(self.files)
++
++    def __getitem__(self, idx: int):
++        file_path = self.files[idx]
++        with open(file_path, "r", encoding="utf-8") as f:
++            data = json.load(f)
++        text = data.get("text", "")
++        tokens = self.tokenizer(
++            text,
++            return_tensors="pt",
++            truncation=True,
++            padding="max_length",
++            max_length=self.max_length,
++        )
++        item = {k: v.squeeze(0) for k, v in tokens.items()}
++        item["labels"] = item["input_ids"].clone()
++        return item
+diff --git a/trellis_qlora/main.py b/trellis_qlora/main.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ddd5c9a8b1c26f644b1f894ec296353023d4d40b
+--- /dev/null
++++ b/trellis_qlora/main.py
+@@ -0,0 +1,105 @@
++#!/usr/bin/env python3
++"""TRELLIS QLoRA 실험 메인 실행 파일"""
++
++import argparse
++from pathlib import Path
++import sys
++
++# 현재 디렉토리와 상위 TRELLIS 루트 경로를 파이썬 경로에 추가
++SCRIPT_DIR = Path(__file__).parent
++TRELLIS_ROOT = SCRIPT_DIR.parent
++sys.path.insert(0, str(SCRIPT_DIR))
++sys.path.insert(0, str(TRELLIS_ROOT))
++
++from qlora_manager import TRELLISQLoRAManager
++
++
++def parse_args() -> argparse.Namespace:
++    """명령행 인자 파싱"""
++    parser = argparse.ArgumentParser(description="TRELLIS 모델 QLoRA 미세튜닝")
++    parser.add_argument(
++        "--model_path",
++        type=str,
++        default="/workspace/TRELLIS/microsoft/TRELLIS-text-large/ckpts",
++        help="사전학습된 TRELLIS 모델 경로",
++    )
++    parser.add_argument(
++        "--dataset_path",
++        type=str,
++        default="/home/sr/TRELLIS/datasets/HSSD",
++        help="학습 데이터셋 경로",
++    )
++    parser.add_argument(
++        "--output_dir",
++        type=str,
++        default="qlora_results",
++        help="체크포인트 및 로그 저장 디렉토리",
++    )
++    parser.add_argument(
++        "--max_steps",
++        type=int,
++        default=1000,
++        help="총 학습 스텝 수",
++    )
++    parser.add_argument(
++        "--batch_size",
++        type=int,
++        default=1,
++        help="GPU 당 배치 크기",
++    )
++    parser.add_argument(
++        "--lr",
++        type=float,
++        default=1e-4,
++        help="학습률",
++    )
++    parser.add_argument(
++        "--save_steps",
++        type=int,
++        default=100,
++        help="체크포인트 저장 주기",
++    )
++    parser.add_argument(
++        "--log_steps",
++        type=int,
++        default=10,
++        help="텐서보드 로그 주기",
++    )
++    return parser.parse_args()
++
++
++def main():
++    args = parse_args()
++
++    print("🔧 TRELLIS QLoRA 미세튜닝")
++    print("=" * 40)
++    print(f"📂 모델 경로: {args.model_path}")
++    print(f"📁 데이터셋: {args.dataset_path}")
++    print(f"📁 출력 디렉토리: {args.output_dir}")
++    print("=" * 40)
++
++    manager = TRELLISQLoRAManager(
++        model_path=args.model_path,
++        dataset_path=args.dataset_path,
++        output_dir=args.output_dir,
++        max_steps=args.max_steps,
++        batch_size=args.batch_size,
++        lr=args.lr,
++        save_steps=args.save_steps,
++        log_steps=args.log_steps,
++    )
++
++    success = manager.run_experiment()
++
++    if success:
++        print("\n🎉 QLoRA 학습 완료")
++        print(f"📦 체크포인트: {args.output_dir}/ckpts")
++        print(f"📈 텐서보드 로그: {args.output_dir}/logs")
++        sys.exit(0)
++    else:
++        print("\n❌ QLoRA 학습 실패")
++        sys.exit(1)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/trellis_qlora/model_loader.py b/trellis_qlora/model_loader.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd00536287cfee3e8fc938b589ef1ea49525d68f
+--- /dev/null
++++ b/trellis_qlora/model_loader.py
+@@ -0,0 +1,44 @@
++"""TRELLIS 모델 로더 및 QLoRA 어댑터"""
++
++from typing import Tuple
++
++
++class ModelLoader:
++    """사전학습된 TRELLIS 모델을 로드하고 QLoRA를 적용"""
++
++    def __init__(self, model_path: str) -> None:
++        self.model_path = model_path
++
++    def load_model(self):
++        """모델과 토크나이저 로드"""
++        import torch
++        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
++        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
++
++        quant_config = BitsAndBytesConfig(
++            load_in_4bit=True,
++            bnb_4bit_use_double_quant=True,
++            bnb_4bit_quant_type="nf4",
++            bnb_4bit_compute_dtype=torch.float16,
++        )
++
++        tokenizer = AutoTokenizer.from_pretrained(self.model_path)
++        model = AutoModelForCausalLM.from_pretrained(
++            self.model_path,
++            quantization_config=quant_config,
++            device_map="auto",
++        )
++
++        model = prepare_model_for_kbit_training(model)
++
++        lora_config = LoraConfig(
++            r=16,
++            lora_alpha=32,
++            target_modules=None,
++            lora_dropout=0.1,
++            bias="none",
++            task_type="CAUSAL_LM",
++        )
++        model = get_peft_model(model, lora_config)
++        model.print_trainable_parameters()  # pragma: no cover - 콘솔 출력 목적
++        return model, tokenizer
+diff --git a/trellis_qlora/qlora_manager.py b/trellis_qlora/qlora_manager.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d024067318f300b46c9cd89236d0096309401e0
+--- /dev/null
++++ b/trellis_qlora/qlora_manager.py
+@@ -0,0 +1,74 @@
++"""TRELLIS QLoRA 학습 매니저"""
++
++from pathlib import Path
++from typing import Optional
++
++from model_loader import ModelLoader
++from data_loader import TextDataset
++from trainer import QLoRATrainer
++
++
++class TRELLISQLoRAManager:
++    """QLoRA 실험을 관리하는 클래스"""
++
++    def __init__(
++        self,
++        model_path: str,
++        dataset_path: str,
++        output_dir: str,
++        max_steps: int,
++        batch_size: int,
++        lr: float,
++        save_steps: int,
++        log_steps: int,
++    ) -> None:
++        self.model_path = model_path
++        self.dataset_path = dataset_path
++        self.output_dir = Path(output_dir)
++        self.output_dir.mkdir(parents=True, exist_ok=True)
++        self.max_steps = max_steps
++        self.batch_size = batch_size
++        self.lr = lr
++        self.save_steps = save_steps
++        self.log_steps = log_steps
++
++        self.checkpoint_dir = self.output_dir / "ckpts"
++        self.log_dir = self.output_dir / "logs"
++        self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
++        self.log_dir.mkdir(exist_ok=True, parents=True)
++
++        self.model = None
++        self.tokenizer = None
++        self.dataset = None
++
++    def prepare(self) -> bool:
++        """모델과 데이터셋 준비"""
++        try:
++            loader = ModelLoader(self.model_path)
++            self.model, self.tokenizer = loader.load_model()
++            self.dataset = TextDataset(self.dataset_path, self.tokenizer)
++            return True
++        except Exception as e:  # pragma: no cover - 단순 출력
++            print(f"❌ 준비 단계 실패: {e}")
++            return False
++
++    def run_experiment(self) -> bool:
++        """QLoRA 학습 실행"""
++        if not self.prepare():
++            return False
++
++        trainer = QLoRATrainer(
++            model=self.model,
++            tokenizer=self.tokenizer,
++            dataset=self.dataset,
++            output_dir=self.output_dir,
++            checkpoint_dir=self.checkpoint_dir,
++            log_dir=self.log_dir,
++            max_steps=self.max_steps,
++            batch_size=self.batch_size,
++            lr=self.lr,
++            save_steps=self.save_steps,
++            log_steps=self.log_steps,
++        )
++
++        return trainer.train()
+diff --git a/trellis_qlora/trainer.py b/trellis_qlora/trainer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d05c30449e8900bb041acd93723c2c58daead0e3
+--- /dev/null
++++ b/trellis_qlora/trainer.py
+@@ -0,0 +1,106 @@
++"""QLoRA 학습 루프 구현"""
++
++from itertools import cycle
++from pathlib import Path
++from typing import Dict
++
++import torch
++import torch.distributed as dist
++from torch.utils.data import DataLoader, DistributedSampler
++from torch.utils.tensorboard import SummaryWriter
++from torch.cuda.amp import autocast, GradScaler
++from torch.nn.parallel import DistributedDataParallel as DDP
++
++
++class QLoRATrainer:
++    """QLoRA 학습을 수행하는 트레이너"""
++
++    def __init__(
++        self,
++        model,
++        tokenizer,
++        dataset,
++        output_dir: Path,
++        checkpoint_dir: Path,
++        log_dir: Path,
++        max_steps: int,
++        batch_size: int,
++        lr: float,
++        save_steps: int,
++        log_steps: int,
++    ) -> None:
++        self.model = model
++        self.tokenizer = tokenizer
++        self.dataset = dataset
++        self.output_dir = output_dir
++        self.checkpoint_dir = checkpoint_dir
++        self.log_dir = log_dir
++        self.max_steps = max_steps
++        self.batch_size = batch_size
++        self.lr = lr
++        self.save_steps = save_steps
++        self.log_steps = log_steps
++
++        self.world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
++        self.rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
++        self.is_main = self.rank == 0
++
++    def _setup(self):
++        sampler = DistributedSampler(self.dataset) if self.world_size > 1 else None
++        self.dataloader = DataLoader(
++            self.dataset,
++            batch_size=self.batch_size,
++            sampler=sampler,
++            shuffle=sampler is None,
++        )
++
++        if self.world_size > 1:
++            self.model = DDP(self.model, device_ids=[self.rank], output_device=self.rank)
++
++        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
++        self.scaler = GradScaler()
++        if self.is_main:
++            self.writer = SummaryWriter(self.log_dir)
++
++    def _save_checkpoint(self, step: int):
++        if not self.is_main:
++            return
++        ckpt_path = self.checkpoint_dir / f"step_{step}.pt"
++        state = {
++            "model": self.model.state_dict() if not isinstance(self.model, DDP) else self.model.module.state_dict(),
++            "optimizer": self.optimizer.state_dict(),
++            "step": step,
++        }
++        torch.save(state, ckpt_path)
++
++    def train(self) -> bool:
++        self._setup()
++        self.model.train()
++
++        step = 0
++        data_iter = cycle(self.dataloader)
++
++        while step < self.max_steps:
++            batch: Dict[str, torch.Tensor] = next(data_iter)
++            batch = {k: v.cuda() for k, v in batch.items()}
++
++            with autocast(device_type="cuda", dtype=torch.float16):
++                outputs = self.model(**batch)
++                loss = outputs.loss
++
++            self.scaler.scale(loss).backward()
++            self.scaler.step(self.optimizer)
++            self.scaler.update()
++            self.optimizer.zero_grad(set_to_none=True)
++
++            if self.is_main and step % self.log_steps == 0:
++                self.writer.add_scalar("train/loss", loss.item(), step)
++
++            if step % self.save_steps == 0:
++                self._save_checkpoint(step)
++
++            step += 1
++
++        if self.is_main:
++            self.writer.close()
++        return True
+ 
+EOF
+)
