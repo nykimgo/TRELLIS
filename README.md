@@ -23,6 +23,16 @@ This is **NOT the official TRELLIS repository**.
 
 <!-- Updates -->
 ## ⏩ Updates
+**08/08/2025**
+- QLoRA 양자화 옵션(`quantize`) 활성화 시 실행 오류 발생으로, 현재는 `quantize: false`로 설정하여 **LoRA만 적용**.
+- 관련 설정 파일: `configs/generation/slat_flow_txt_dit_L_64l8p2_qlora.json`
+- 실행 예시:
+```bash
+WARP_SHOW_INITIALIZED_MESSAGE=0 \
+python train.py \
+  --config configs/generation/slat_flow_txt_dit_L_64l8p2_qlora.json \
+  --output_dir outputs/slat_flow_txt_dit_L_64l8p2_qlora \
+  --data_dir datasets/HSSD
 
 **03/25/2025**
 - Release training code.

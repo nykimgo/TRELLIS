@@ -17,6 +17,85 @@ from ..modules.sparse.linear import SparseLinear
 
 from ..utils.elastic_utils import ElasticModuleMixin  # Mixin 클래스 import
 
+import torch.nn.functional as F
+
+class SparseDropout(nn.Module):
+    """SparseTensor와 호환되는 드롭아웃 레이어."""
+    def __init__(self, p=0.5):
+        super().__init__()
+        self.p = p
+
+    def forward(self, input):
+        # 학습 중이 아니거나 드롭아웃 확률이 0이면 아무것도 하지 않음
+        if not self.training or self.p == 0:
+            return input
+        
+        # 입력이 SparseTensor인 경우, 그 내용물(feats)에만 드롭아웃 적용
+        if isinstance(input, sp.SparseTensor):
+            new_feats = F.dropout(input.feats, p=self.p, training=self.training)
+            return input.replace(feats=new_feats)
+        
+        # 일반 텐서는 그대로 드롭아웃 적용
+        return F.dropout(input, p=self.p, training=self.training)
+
+def _replace_lora_dropout_modules(module: nn.Module):
+    """
+    LoraLayer를 순회하며 내부의 Dropout 모듈을 SparseDropout으로 교체합니다.
+    """
+    from peft.tuners.lora import LoraLayer
+    
+    for child_module in module.children():
+        # LoraLayer를 찾음
+        if isinstance(child_module, LoraLayer):
+            # lora_dropout 속성과 ModuleDict가 있는지 확인
+            if hasattr(child_module, 'lora_dropout') and isinstance(child_module.lora_dropout, nn.ModuleDict):
+                for adapter_name, dropout_layer in child_module.lora_dropout.items():
+                    # nn.Dropout 인스턴스를 찾아서
+                    if isinstance(dropout_layer, nn.Dropout):
+                        p = dropout_layer.p
+                        # 우리가 만든 SparseDropout으로 교체
+                        child_module.lora_dropout[adapter_name] = SparseDropout(p)
+        else:
+            # 다른 모든 모듈에 대해 재귀적으로 함수 호출
+            _replace_lora_dropout_modules(child_module)
+
+def _new_lora_linear_forward(self, x):
+    """
+    SparseTensor를 인식하는 새로운 nn.Linear.forward 메서드.
+    'self'는 nn.Linear의 인스턴스입니다.
+    """
+    if isinstance(x, sp.SparseTensor):
+        # 입력이 SparseTensor이면, 그 내용물(feats)에만 linear 연산을 적용
+        return x.replace(feats=F.linear(x.feats, self.weight, self.bias))
+    # 일반 텐서는 원래의 linear 연산을 그대로 수행
+    return F.linear(x, self.weight, self.bias)
+
+def _patch_lora_linear_layers(module: nn.Module):
+    """
+    모델을 순회하며 모든 LoraLayer의 lora_A, lora_B 선형 계층의
+    forward 메서드를 SparseTensor를 인식하는 버전으로 교체(몽키 패치)합니다.
+    """
+    from peft.tuners.lora import LoraLayer
+    import types
+    
+    for child_module in module.children():
+        # LoraLayer (QuantizedLinear, SparseLinear 등을 감싸는)를 찾음
+        if isinstance(child_module, LoraLayer):
+            # lora_A 모듈이 있다면, 모든 어댑터에 대해 패치 적용
+            if hasattr(child_module, 'lora_A'):
+                for adapter in child_module.lora_A.values():
+                    adapter.forward = types.MethodType(_new_lora_linear_forward, adapter)
+            # lora_B 모듈이 있다면, 모든 어댑터에 대해 패치 적용
+            if hasattr(child_module, 'lora_B'):
+                for adapter in child_module.lora_B.values():
+                    adapter.forward = types.MethodType(_new_lora_linear_forward, adapter)
+        else:
+            # 다른 모든 모듈에 대해 재귀적으로 함수 호출
+            _patch_lora_linear_layers(child_module)
+
+
+
+
 class SparseLinear4bit(bnb.nn.Linear4bit):  # type: ignore
     """4bit quantized linear layer that accepts a :class:`SparseTensor`."""
 
@@ -190,50 +269,30 @@ class ElasticPeftModel(ElasticModuleMixin):
 
     def forward(self, *args, **kwargs):
         """
-        '인자 방화벽' 역할을 수행합니다.
-        DDP/Peft에 의해 인자가 어떻게 망가지든, (x, t, cond) 형태를 완벽히 복원하고
-        불필요한 kwargs는 모두 걸러냅니다.
+        '인자 밀수' 작전의 시작점.
+        x, t, cond를 'smuggled_args' 가방에 담아 Peft가 건드리지 못하게 전달합니다.
         """
-        # ========================= DEBUGGING CODE START =========================
-        import torch
-        # 여러 GPU에서 로그가 섞이지 않도록 rank 0에서만 출력
-        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-            print("\n\n" + "="*60)
-            print("🕵️  DEBUG: ENTERING ElasticPeftModel.forward")
-            print(f"Received {len(args)} positional args (args):")
-            for i, arg in enumerate(args):
-                print(f"  - args[{i}]: type={type(arg)}", end="")
-                if isinstance(arg, torch.Tensor):
-                    print(f", shape={arg.shape}, device={arg.device}")
-                elif isinstance(arg, dict):
-                    print(f", DICT KEYS={list(arg.keys())}")
-                else:
-                    print()
-            print(f"Received {len(kwargs)} keyword args (kwargs): {list(kwargs.keys())}")
-            print("="*60 + "\n\n")
-        # ========================== DEBUGGING CODE END ==========================
-        # Sampler로부터 받은 모든 인자 중, 위치 인자 3개만 사용합니다.
+        # Sampler로부터 받은 인자를 추출
         x = args[0]
         t = args[1]
-        
-        # `cond`는 딕셔너리가 아닌 텐서일 수 있습니다. 
-        # Sampler의 CFG Mixin이 딕셔너리를 풀어서 텐서만 전달하는 경우가 많습니다.
-        # 따라서 세 번째 위치 인자를 그대로 `cond`로 사용합니다.
         cond = args[2]
+
+        # 모든 인자를 하나의 딕셔너리에 포장
+        smuggled_args = {'x': x, 't': t, 'cond': cond}
 
         # --- Elastic 로직 (이전과 동일) ---
         if (self._memory_controller is None or
             not torch.is_grad_enabled() or
             not self.training):
-            # **핵심**: PeftModel 호출 시, 오직 (x, t, cond)만 전달하고 kwargs를 전달하지 않음.
-            return self._peft_model(x, t, cond)
+            # **핵심**: 인자들을 'smuggled_args' 키워드 인자 하나로 전달
+            return self._peft_model(smuggled_args=smuggled_args)
         else:
             # Elastic forward
             input_size = self._get_input_size(x)
             mem_ratio = self._memory_controller.get_mem_ratio(input_size)
             with self.with_mem_ratio(mem_ratio) as exact_mem_ratio:
-                # **핵심**: PeftModel 호출 시, 오직 (x, t, cond)만 전달하고 kwargs를 전달하지 않음.
-                ret = self._peft_model(x, t, cond)
+                # **핵심**: 인자들을 'smuggled_args' 키워드 인자 하나로 전달
+                ret = self._peft_model(smuggled_args=smuggled_args)
             self._memory_controller.update_run_states(input_size, exact_mem_ratio)
             return ret
 
@@ -297,7 +356,6 @@ def apply_qlora(
     Returns:
         The modified model.
     """
-    from ..utils.elastic_utils import ElasticModuleMixin
     
     # 원본 디바이스 저장
     original_device = next(model.parameters()).device
@@ -333,14 +391,21 @@ def apply_qlora(
     )
     peft_model = get_peft_model(model, lora_config)
     
+    # LoRA 레이어의 Dropout을 Sparse-aware 버전으로 교체
+    _replace_lora_dropout_modules(peft_model)
+    # LoRA 레이어의 Linear를 Sparse-aware 버전으로 교체 (몽키 패치)
+    _patch_lora_linear_layers(peft_model)
+
     # Elastic 호환성이 필요한 경우 완전한 래퍼 생성
     if is_elastic:
         elastic_model = ElasticPeftModel(peft_model, original_model)
         model = elastic_model
         
+        '''
         if verbose:
             print("   ✅ Full Elastic compatibility wrapper created")
             print("   🔧 Supports: blocks manipulation, memory controller, checkpointing")
+        '''
     else:
         model = peft_model
     
@@ -350,9 +415,9 @@ def apply_qlora(
     # DDP 호환성을 위해 모든 파라미터가 같은 디바이스에 있는지 확인
     devices = {p.device for p in model.parameters()}
     if len(devices) > 1:
-        if verbose:
+        '''if verbose:
             print(f"Warning: Parameters on multiple devices: {devices}")
-            print("Moving all parameters to CUDA...")
+            print("Moving all parameters to CUDA...")'''
         model = model.cuda()
     
     return model

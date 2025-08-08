@@ -1,4 +1,5 @@
 import os
+os.environ['WARP_SHOW_INITIALIZED_MESSAGE'] = '0'
 import sys
 import json
 import glob
@@ -74,18 +75,22 @@ def apply_qlora_if_configured(cfg, model_dict, rank=0):
     # QLoRA utils import
     from trellis.utils import apply_qlora
     
+    '''
     if rank == 0:  # 마스터 프로세스에서만 출력
         print(f"\n🔧 Applying QLoRA to models: {target_models}")
         print(f"   - LoRA rank (r): {qlora_config.get('r', 8)}")
         print(f"   - LoRA alpha: {qlora_config.get('lora_alpha', 16)}")
         print(f"   - LoRA dropout: {qlora_config.get('lora_dropout', 0.0)}")
         print(f"   - Quantization: {qlora_config.get('quantize', True)}")
+    '''
     
     for model_name in target_models:
         if model_name in model_dict:
+            '''
             if rank == 0:
                 print(f"\n📦 Applying QLoRA to {model_name}...")
                 original_params = sum(p.numel() for p in model_dict[model_name].parameters())
+            '''
             
             model_dict[model_name] = apply_qlora(
                 model_dict[model_name],

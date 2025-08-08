@@ -7,12 +7,15 @@
 trellis/representations/mesh/flexicubes
 datasets
 input_data
+outputs
 *.safetensors
 *.npz
 *.zip
 *.glb
 *.ply
 *.mp4
+*.pt
+events.out*
 
 # User-specific files
 *.rsuser
