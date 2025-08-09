@@ -15,6 +15,7 @@ from .utils import *
 from ..utils.general_utils import *
 from ..utils.data_utils import recursive_to_device, cycle, ResumableSampler
 
+import datetime
 
 class Trainer:
     """
@@ -138,7 +139,8 @@ class Trainer:
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=self.batch_size_per_gpu,
-            num_workers=int(np.ceil(os.cpu_count() / torch.cuda.device_count())),
+            # num_workers=int(np.ceil(os.cpu_count() / torch.cuda.device_count())),
+            num_workers=32,
             pin_memory=True,
             drop_last=True,
             persistent_workers=True,
@@ -371,9 +373,12 @@ class Trainer:
             self.step += 1
 
             # Print progress
-            if self.is_master and self.step % self.i_print == 0:
+            # if self.is_master and self.step % self.i_print == 0:
+            if self.is_master:
                 speed = self.i_print / (time_elapsed - time_last_print) * 3600
+                timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 columns = [
+                    f'[{timestamp}] ',
                     f'Step: {self.step}/{self.max_steps} ({self.step / self.max_steps * 100:.2f}%)',
                     f'Elapsed: {time_elapsed / 3600:.2f} h',
                     f'Speed: {speed:.2f} steps/h',

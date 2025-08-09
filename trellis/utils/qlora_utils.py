@@ -196,6 +196,15 @@ class ElasticPeftModel(ElasticModuleMixin):
         # PeftModel의 모든 속성과 메서드를 위임
         self.__dict__['_peft_model'] = peft_model
         self.__dict__['_original_model'] = original_model
+        '''
+        # DDP 호환성을 위한 설정
+        self._ddp_params_and_buffers_to_ignore = set()
+        
+        # Frozen 파라미터들을 DDP에서 무시하도록 설정
+        for name, param in peft_model.named_parameters():
+            if not param.requires_grad:
+                self._ddp_params_and_buffers_to_ignore.add(name)
+        '''
         
     def __getattr__(self, name):
         """PeftModel의 속성/메서드에 접근"""

@@ -1,5 +1,10 @@
 import os
 os.environ['WARP_SHOW_INITIALIZED_MESSAGE'] = '0'
+os.environ['WARP_QUIET'] = '1'
+os.environ['WARP_VERBOSE'] = '0'
+os.environ['NVIDIA_WARP_QUIET'] = '1'
+os.environ['WARP_ENABLE_BACKWARD'] = '0'  # 추가
+os.environ['WARP_CACHE_KERNELS'] = '0'    # 추가
 import sys
 import json
 import glob
@@ -86,11 +91,9 @@ def apply_qlora_if_configured(cfg, model_dict, rank=0):
     
     for model_name in target_models:
         if model_name in model_dict:
-            '''
             if rank == 0:
                 print(f"\n📦 Applying QLoRA to {model_name}...")
                 original_params = sum(p.numel() for p in model_dict[model_name].parameters())
-            '''
             
             model_dict[model_name] = apply_qlora(
                 model_dict[model_name],
@@ -161,7 +164,7 @@ def main(local_rank, cfg):
 
     # Build trainer (기존과 동일)
     trainer = getattr(trainers, cfg.trainer.name)(model_dict, dataset, **cfg.trainer.args, output_dir=cfg.output_dir, load_dir=cfg.load_dir, step=cfg.load_ckpt)
-    
+
     # Train
     if not cfg.tryrun:
         if cfg.profile:
