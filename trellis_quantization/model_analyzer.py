@@ -42,7 +42,7 @@ class ModelAnalyzer:
                         
                         # 양자화 상태 확인
                         is_quantized = self._check_quantization_status(model)
-                        status = "🔧INT8" if is_quantized else "📏FP32"
+                        status = "🔧INT8" if is_quantized else "📏FP16"
                         
                         print(f"    • {model_name}: {model_params/1e6:.1f}M 파라미터 {status}")
                         
