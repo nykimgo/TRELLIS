@@ -15,6 +15,7 @@ outputs
 *.ply
 *.mp4
 *.pt
+*.txt
 events.out*
 
 # User-specific files

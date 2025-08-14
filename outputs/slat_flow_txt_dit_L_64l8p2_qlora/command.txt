@@ -1,1 +1,1 @@
-python train.py --config configs/generation/slat_flow_txt_dit_L_64l8p2_qlora.json --output_dir outputs/slat_flow_txt_dit_L_64l8p2_qlora --data_dir /home/sr/TRELLIS/datasets/HSSD --ckpt 5400 --num_gpus 1
+python train.py --config configs/generation/slat_flow_txt_dit_L_64l8p2_qlora.json --output_dir outputs/slat_flow_txt_dit_L_64l8p2_qlora --data_dir /home/sr/TRELLIS/datasets/HSSD --ckpt 5600 --num_gpus 1

@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 import gradio as gr
 from gradio_litmodel3d import LitModel3D
 

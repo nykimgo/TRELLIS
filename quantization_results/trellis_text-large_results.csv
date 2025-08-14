@@ -1,3 +1,0 @@
-model_name,total_params_M,model_size_MB,gpu_memory_MB,inference_time_ms,quality_score
-Original (FP32),1466.146198,2803.490867614746,4772.44677734375,100.20558039347331,0.95
-Quantized (INT8),493.95675,944.145622253418,4264.974609375,100.20311673482259,0.9

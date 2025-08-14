@@ -194,7 +194,7 @@ class FlowMatchingTrainer(BasicTrainer):
             copy.deepcopy(self.dataset),
             batch_size=batch_size,
             shuffle=True,
-            num_workers=0,
+            num_workers=8,
             collate_fn=self.dataset.collate_fn if hasattr(self.dataset, 'collate_fn') else None,
         )
 

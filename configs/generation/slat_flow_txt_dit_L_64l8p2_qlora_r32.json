@@ -13,9 +13,7 @@
                 "mlp_ratio": 4,
                 "patch_size": 2,
                 "num_io_res_blocks": 2,
-                "io_block_channels": [
-                    128
-                ],
+                "io_block_channels": [128],
                 "pe_mode": "ape",
                 "qk_rms_norm": true,
                 "use_fp16": true
@@ -56,7 +54,7 @@
     "trainer": {
         "name": "TextConditionedSparseFlowMatchingCFGTrainer",
         "args": {
-            "max_steps": 100000,
+            "max_steps": 12000,
             "batch_size_per_gpu": 8,
             "batch_split": 2,
             "optimizer": {
@@ -85,9 +83,9 @@
                     "clip_percentile": 95
                 }
             },
-            "i_log": 100,
-            "i_sample": 200,
-            "i_save": 200,
+            "i_log": 200,
+            "i_sample": 2000,
+            "i_save": 2000,
             "i_print": 1,
             "p_uncond": 0.1,
             "t_schedule": {
@@ -97,18 +95,16 @@
                     "std": 1.0
                 }
             },
-            "sigma_min": 1e-05,
+            "sigma_min": 1e-5,
             "text_cond_model": "openai/clip-vit-large-patch14"
         }
     },
     "qlora": {
-        "r": 16,
-        "lora_alpha": 32,
+        "r": 32,
+        "lora_alpha": 64,
         "lora_dropout": 0.05,
         "quantize": false,
-        "target_models": [
-            "denoiser"
-        ],
+        "target_models": ["denoiser"],
         "use_target_patterns": true,
         "model_type": "structured_latent_flow"
     }

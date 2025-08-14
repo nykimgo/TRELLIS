@@ -54,14 +54,14 @@
     "trainer": {
         "name": "TextConditionedSparseFlowMatchingCFGTrainer",
         "args": {
-            "max_steps": 100000,
+            "max_steps": 12000,
             "batch_size_per_gpu": 8,
             "batch_split": 2,
             "optimizer": {
                 "name": "AdamW",
                 "args": {
                     "lr": 0.0001,
-                    "weight_decay": 0.0
+                    "weight_decay": 0.01
                 }
             },
             "ema_rate": [
@@ -83,10 +83,10 @@
                     "clip_percentile": 95
                 }
             },
-            "i_log": 50, 
-            "i_sample": 50,
-            "i_save": 200,
-            "i_print": 1,
+            "i_log": 200,
+            "i_sample": 2000,
+            "i_save": 2000,
+            "i_print": 200,
             "p_uncond": 0.1,
             "t_schedule": {
                 "name": "logitNormal",
@@ -100,8 +100,8 @@
         }
     },
     "qlora": {
-        "r": 8,
-        "lora_alpha": 16,
+        "r": 128,
+        "lora_alpha": 256,
         "lora_dropout": 0.05,
         "quantize": false,
         "target_models": ["denoiser"],

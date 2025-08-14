@@ -65,7 +65,8 @@ class SparseFlowMatchingTrainer(FlowMatchingTrainer):
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=self.batch_size_per_gpu,
-            num_workers=int(np.ceil(os.cpu_count() / torch.cuda.device_count())),
+            # num_workers=int(np.ceil(os.cpu_count() / torch.cuda.device_count())),
+            num_workers=8,
             pin_memory=True,
             drop_last=True,
             persistent_workers=True,

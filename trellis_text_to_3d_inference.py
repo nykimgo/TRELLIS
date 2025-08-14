@@ -231,6 +231,13 @@ class TrellisInferenceManager:
             self.object_name_counter[base_name] = 1
             return f"{base_name}_01"
     
+    def _sanitize_model_name(self, model_name: str) -> str:
+        """Sanitize LLM model name for use in folder paths"""
+        if not model_name:
+            return "unknown_model"
+        # Replace ':' with '_' and any other invalid characters
+        return model_name.replace(':', '_')
+    
     def process_batch_from_csv(self, csv_path: str, config: Dict, output_dir: str = "./outputs") -> None:
         """Process batch prompts from CSV file"""
         try:
@@ -248,6 +255,7 @@ class TrellisInferenceManager:
             
             object_name_column = 'object_name' if 'object_name' in df.columns else None
             seed_column = 'seed' if 'seed' in df.columns else None
+            models_column = 'llm_model' if 'llm_model' in df.columns else None
             
             # CSV 데이터를 딕셔너리 리스트로 변환
             csv_data = []
@@ -261,7 +269,8 @@ class TrellisInferenceManager:
                             if seed_column and str(row[seed_column]).lower() == "random"
                             else int(row[seed_column]) if seed_column and pd.notna(row[seed_column])
                             else config.get('generation', {}).get('seed', "random")
-                        )                    
+                        ),
+                        'llm_model': row[models_column] if models_column and pd.notna(row[models_column]) else None
                     }
                     csv_data.append(item)
             
@@ -294,7 +303,7 @@ class TrellisInferenceManager:
         
         # 출력 디렉토리 생성
         self.output_base.mkdir(parents=True, exist_ok=True)
-        
+
         generation_config = config.get('generation', {})
         output_config = config.get('output', {})
         postprocessing_config = config.get('postprocessing', {})
@@ -305,10 +314,13 @@ class TrellisInferenceManager:
             prompt = item['prompt']
             predefined_name = item['object_name']
             seed = item['seed']
+            llm_model = item.get('llm_model')
             
             logging.info(f"\n🎯 [{i}/{len(csv_data)}] Processing: '{prompt}'")
             if predefined_name:
                 logging.info(f"📋 Object name: {predefined_name}")
+            if llm_model:
+                logging.info(f"🤖 LLM model: {llm_model}")
             logging.info(f"🎲 Seed: {seed}")
             
             try:
@@ -321,7 +333,8 @@ class TrellisInferenceManager:
                     predefined_name=predefined_name,
                     config=individual_config,
                     formats=formats,
-                    postprocessing_config=postprocessing_config
+                    postprocessing_config=postprocessing_config,
+                    llm_model=llm_model
                 )
                 
                 self.results_data.append(result)
@@ -333,6 +346,7 @@ class TrellisInferenceManager:
                     'object_name': predefined_name or 'error',
                     'seed': seed,
                     'model_name': self.model_name,
+                    'llm_model': llm_model,
                     'generation_time': 0.0,
                     'total_time': 0.0,
                     'success': False,
@@ -369,7 +383,8 @@ class TrellisInferenceManager:
                     predefined_name=None,
                     config=generation_config,
                     formats=formats,
-                    postprocessing_config=postprocessing_config
+                    postprocessing_config=postprocessing_config,
+                    llm_model=None
                 )
                 
                 self.results_data.append(result)
@@ -380,6 +395,7 @@ class TrellisInferenceManager:
                     'prompt': prompt,
                     'object_name': 'error',
                     'model_name': self.model_name,
+                    'llm_model': None,
                     'generation_time': 0.0,
                     'total_time': 0.0,
                     'success': False,
@@ -430,7 +446,7 @@ class TrellisInferenceManager:
                 new_filename = f"{name_part}_{timestamp}{ext_part}"
                 return new_filename
 
-    def _generate_single(self, prompt: str, predefined_name: Optional[str], config: Dict, formats: List[str], postprocessing_config: Dict) -> Dict:
+    def _generate_single(self, prompt: str, predefined_name: Optional[str], config: Dict, formats: List[str], postprocessing_config: Dict, llm_model: Optional[str] = None) -> Dict:
         """Generate single 3D object"""
         start_time = time.time()
         
@@ -447,8 +463,13 @@ class TrellisInferenceManager:
         else:
             seed = int(seed_val)
         
-        # 개별 객체 디렉토리 생성: {base_output}/{object_name}/
-        object_dir = self.output_base / object_name
+        # 개별 객체 디렉토리 생성: {base_output}/{llm_model}/{object_name}/ or {base_output}/{object_name}/
+        if llm_model:
+            sanitized_llm_model = self._sanitize_model_name(llm_model)
+            object_dir = self.output_base / sanitized_llm_model / object_name
+        else:
+            object_dir = self.output_base / object_name
+        print(f'LLM Model: {llm_model}, target object_dir: {object_dir}')
         object_dir.mkdir(parents=True, exist_ok=True)
         
         # Generation timing
@@ -488,9 +509,13 @@ class TrellisInferenceManager:
         save_start = time.time()
         
         try:
-            # GLB 파일: {object_name}_{model_name}_{seed}.glb (중복 시 숫자 추가)
+            # GLB 파일: {object_name}_{model_name}_{llm_model}_{seed}.glb (중복 시 숫자 추가)
             if 'glb' in formats:
-                base_filename = f"{object_name}_{self.model_name}_{seed}.glb"
+                if llm_model:
+                    sanitized_llm_model = self._sanitize_model_name(llm_model)
+                    base_filename = f"{object_name}_{self.model_name}_{sanitized_llm_model}_{seed}.glb"
+                else:
+                    base_filename = f"{object_name}_{self.model_name}_{seed}.glb"
                 glb_filename = self._get_unique_filename(object_dir, base_filename)
                 glb_path = object_dir / glb_filename
                 
@@ -504,9 +529,13 @@ class TrellisInferenceManager:
                 saved_files.append(str(glb_path))
                 logging.info(f"💾 GLB saved: {glb_filename}")
             
-            # PLY 파일: {object_name}_{model_name}_{seed}.ply (중복 시 숫자 추가)
+            # PLY 파일: {object_name}_{model_name}_{llm_model}_{seed}.ply (중복 시 숫자 추가)
             if 'ply' in formats:
-                base_filename = f"{object_name}_{self.model_name}_{seed}.ply"
+                if llm_model:
+                    sanitized_llm_model = self._sanitize_model_name(llm_model)
+                    base_filename = f"{object_name}_{self.model_name}_{sanitized_llm_model}_{seed}.ply"
+                else:
+                    base_filename = f"{object_name}_{self.model_name}_{seed}.ply"
                 ply_filename = self._get_unique_filename(object_dir, base_filename)
                 ply_path = object_dir / ply_filename
                 
@@ -514,10 +543,14 @@ class TrellisInferenceManager:
                 saved_files.append(str(ply_path))
                 logging.info(f"💾 PLY saved: {ply_filename}")
             
-            # MP4 파일들: {object_name}_{model_name}_{seed}_gs/rf/mesh.mp4 (중복 시 숫자 추가)
+            # MP4 파일들: {object_name}_{model_name}_{llm_model}_{seed}_gs/rf/mesh.mp4 (중복 시 숫자 추가)
             if 'mp4' in formats:
                 if video_gs is not None:
-                    base_filename = f"{object_name}_{self.model_name}_{seed}_gs.mp4"
+                    if llm_model:
+                        sanitized_llm_model = self._sanitize_model_name(llm_model)
+                        base_filename = f"{object_name}_{self.model_name}_{sanitized_llm_model}_{seed}_gs.mp4"
+                    else:
+                        base_filename = f"{object_name}_{self.model_name}_{seed}_gs.mp4"
                     gs_filename = self._get_unique_filename(object_dir, base_filename)
                     gs_path = object_dir / gs_filename
                     imageio.mimsave(str(gs_path), video_gs, fps=30)
@@ -525,7 +558,11 @@ class TrellisInferenceManager:
                     logging.info(f"💾 GS video saved: {gs_filename}")
                 
                 if video_rf is not None:
-                    base_filename = f"{object_name}_{self.model_name}_{seed}_rf.mp4"
+                    if llm_model:
+                        sanitized_llm_model = self._sanitize_model_name(llm_model)
+                        base_filename = f"{object_name}_{self.model_name}_{sanitized_llm_model}_{seed}_rf.mp4"
+                    else:
+                        base_filename = f"{object_name}_{self.model_name}_{seed}_rf.mp4"
                     rf_filename = self._get_unique_filename(object_dir, base_filename)
                     rf_path = object_dir / rf_filename
                     imageio.mimsave(str(rf_path), video_rf, fps=30)
@@ -533,14 +570,18 @@ class TrellisInferenceManager:
                     logging.info(f"💾 RF video saved: {rf_filename}")
                 
                 if video_mesh is not None:
-                    base_filename = f"{object_name}_{self.model_name}_{seed}_mesh.mp4"
+                    if llm_model:
+                        sanitized_llm_model = self._sanitize_model_name(llm_model)
+                        base_filename = f"{object_name}_{self.model_name}_{sanitized_llm_model}_{seed}_mesh.mp4"
+                    else:
+                        base_filename = f"{object_name}_{self.model_name}_{seed}_mesh.mp4"
                     mesh_filename = self._get_unique_filename(object_dir, base_filename)
                     mesh_path = object_dir / mesh_filename
                     imageio.mimsave(str(mesh_path), video_mesh, fps=30)
                     saved_files.append(str(mesh_path))
                     logging.info(f"💾 Mesh video saved: {mesh_filename}")
             
-            # 썸네일 생성: {object_name}_{model_name}_{seed}_gs_{sec}s.jpg (중복 시 숫자 추가)
+            # 썸네일 생성: {object_name}_{model_name}_{llm_model}_{seed}_gs_{sec}s.jpg (중복 시 숫자 추가)
             if 'jpg' in formats or video_gs is not None:
                 try:
                     frame_times = [4, 5, 6, 10]  # seconds
@@ -550,7 +591,11 @@ class TrellisInferenceManager:
                     for sec in frame_times:
                         frame_idx = sec * fps
                         if video_gs is not None and len(video_gs) > frame_idx:
-                            base_filename = f"{object_name}_{self.model_name}_{seed}_gs_{sec:03d}s.jpg"
+                            if llm_model:
+                                sanitized_llm_model = self._sanitize_model_name(llm_model)
+                                base_filename = f"{object_name}_{self.model_name}_{sanitized_llm_model}_{seed}_gs_{sec:03d}s.jpg"
+                            else:
+                                base_filename = f"{object_name}_{self.model_name}_{seed}_gs_{sec:03d}s.jpg"
                             thumbnail_filename = self._get_unique_filename(object_dir, base_filename)
                             thumbnail_path = object_dir / thumbnail_filename
                             
@@ -576,6 +621,7 @@ class TrellisInferenceManager:
             'object_name': object_name,
             'seed': seed,
             'model_name': self.model_name,
+            'llm_model': llm_model,
             'generation_time': round(generation_time, 2),
             'render_time': round(render_time, 2),
             'save_time': round(save_time, 2),
