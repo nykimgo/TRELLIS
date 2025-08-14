@@ -1,0 +1,9 @@
+{
+  "mean_clip_score": 0.1966796875,
+  "mean_clip_score_scaled": 19.66796875,
+  "total_assets": 5,
+  "successful_evaluations": 5,
+  "success_rate": 1.0,
+  "dataset_path": "/mnt/nas/Benchmark_Datatset/Toys4k",
+  "is_mock": false
+}

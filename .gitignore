@@ -17,6 +17,8 @@ outputs
 *.pt
 *.txt
 events.out*
+api_config.json
+prompt_generation_outputs
 
 # User-specific files
 *.rsuser

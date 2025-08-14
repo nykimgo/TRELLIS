@@ -1,0 +1,31 @@
+{
+    "preferred_apis": ["groq", "openai", "claude", "gemini"],
+    "groq": {
+      "api_key": "",
+      "base_url": "https://api.groq.com/openai/v1",
+      "model": "llama-3.1-70b-versatile",
+      "enabled": false,
+      "description": "Very fast inference, free tier available"
+    },
+    "openai": {
+      "api_key": "",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini",
+      "enabled": false,
+      "description": "Most reliable, paid service"
+    },
+    "claude": {
+      "api_key": "",
+      "base_url": "https://api.anthropic.com",
+      "model": "claude-3-5-haiku-20241022",
+      "enabled": false,
+      "description": "High quality, paid service"
+    },
+    "gemini": {
+      "api_key": "",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "model": "gemini-1.5-flash",
+      "enabled": false,
+      "description": "Good performance, free tier available"
+    }
+  }
