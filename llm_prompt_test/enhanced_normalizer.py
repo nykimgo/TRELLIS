@@ -19,21 +19,20 @@ You are an expert text processing assistant. Your task is to process LLM-generat
 
 Given raw LLM output containing original prompts and their enhanced versions, extract and return the data in this exact JSON format for each pair:
 
-{"object_name": "<main_object>", "user_prompt": "<original_short_prompt>", "text_prompt": "<enhanced_detailed_prompt>"}
+{"object_name": "<main_object>", "text_prompt": "<enhanced_detailed_prompt>"}
 
 Rules:
 1. object_name: Extract the main object (1-3 words, singular form, no articles)
-2. user_prompt: Original short prompt (clean, no numbering)  
-3. text_prompt: Enhanced detailed prompt (clean, descriptive)
-4. Return ONLY valid JSON objects, one per line
-5. No explanations, headers, or additional text
+2. text_prompt: Enhanced detailed prompt (clean, descriptive)
+3. Return ONLY valid JSON objects, one per line
+4. No explanations, headers, or additional text
 
 Examples:
 Input: 1. "Dark wooden table":"A dark wooden side table with carved legs..."
-Output: {"object_name": "Table", "user_prompt": "Dark wooden table", "text_prompt": "A dark wooden side table with carved legs and a smooth surface finish"}
+Output: {"object_name": "Table", "text_prompt": "A dark wooden side table with carved legs and a smooth surface finish"}
 
 Input: 2. "Red sports car":"A sleek red sports car with aerodynamic design..."  
-Output: {"object_name": "Car", "user_prompt": "Red sports car", "text_prompt": "A sleek red sports car with aerodynamic design and chrome details"}
+Output: {"object_name": "Car", "text_prompt": "A sleek red sports car with aerodynamic design and chrome details"}
 
 Now process this input:
 
@@ -188,10 +187,9 @@ Now process this input:
                     data = json.loads(line)
                     
                     # 필수 필드 확인
-                    if all(key in data for key in ['object_name', 'user_prompt', 'text_prompt']):
+                    if all(key in data for key in ['object_name', 'text_prompt']):
                         normalized_data.append({
                             'object_name': str(data['object_name']).strip(),
-                            'user_prompt': str(data['user_prompt']).strip(),
                             'text_prompt': str(data['text_prompt']).strip()
                         })
                         
@@ -235,7 +233,6 @@ Now process this input:
                                 
                                 normalized_data.append({
                                     'object_name': object_name,
-                                    'user_prompt': clean_original,
                                     'text_prompt': clean_enhanced
                                 })
                         break
@@ -252,9 +249,13 @@ Now process this input:
         
         # 원본 LLM 결과에서 모델별 프롬프트 매핑 생성
         model_prompt_map = {}
+        object_name_cache = {}  # object_name 캐시
+        metadata_cache = {}     # metadata 캐시
+        
         if llm_results:
             print(f"Creating model mapping from {len(llm_results)} LLM result files...")
             
+            # 첫 번째 패스: 모든 모델에서 데이터 추출 및 캐시 구축
             for model, file_path in llm_results.items():
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
@@ -278,6 +279,16 @@ Now process this input:
                                 clean_original = re.sub(r'^\d+\.\s*', '', original).strip().strip('"\'').lower()
                                 model_prompt_map[clean_original] = model
                                 found_matches += 1
+                                
+                                # metadata와 object_name 캐시 구축
+                                for original_data in metadata_dict.values():
+                                    if original_data['original_caption'].lower().strip() == clean_original:
+                                        metadata_cache[clean_original] = original_data
+                                        # object_name 추출 (Unknown이 아닌 경우만)
+                                        object_name = self._extract_object_name_from_prompt(clean_original)
+                                        if object_name != "Unknown":
+                                            object_name_cache[clean_original] = object_name
+                                        break
                             break
                     
                     print(f"  Found {found_matches} prompts from {model}")
@@ -286,106 +297,112 @@ Now process this input:
                     print(f"Warning: Could not parse {model} for model mapping: {e}")
             
             print(f"Total mapped prompts: {len(model_prompt_map)}")
-            if model_prompt_map:
-                print("Sample mappings:")
-                for i, (prompt, model) in enumerate(list(model_prompt_map.items())[:3]):
-                    print(f"  '{prompt[:30]}...' → {model}")
+            print(f"Object name cache entries: {len(object_name_cache)}")
+            print(f"Metadata cache entries: {len(metadata_cache)}")
         
-        # 메타데이터와 매칭
+        # 정규화된 데이터에 user_prompt 매핑 및 캐시 적용
+        # 우선 object_name을 기반으로 매칭 시도 (더 안정적)
+        original_captions = list(metadata_dict.keys())
+        
         for entry in normalized_data:
-            user_prompt = entry['user_prompt'].lower().strip()
+            source_model = entry.get('llm_model', 'unknown')
+            user_prompt = None
             
-            # 원본 데이터에서 매칭 시도
-            for original_data in metadata_dict.values():
-                if original_data['original_caption'].lower().strip() == user_prompt:
-                    entry.update({
-                        'sha256': original_data['sha256'],
-                        'file_identifier': original_data['file_identifier']
-                    })
-                    break
+            # object_name과 일치하는 original_caption 찾기
+            entry_object_name = entry.get('object_name', '').lower().strip()
+            
+            # 가능한 매칭 후보들 수집
+            matching_candidates = []
+            for original_caption in original_captions:
+                # object_name이 caption에 포함되는지 확인
+                if entry_object_name and entry_object_name in original_caption.lower():
+                    matching_candidates.append(original_caption)
+            
+            # 매칭 후보가 없으면 순서대로 할당 (DeepSeek용 fallback)
+            if not matching_candidates:
+                # 이미 사용된 caption 제외하고 남은 것 중 첫 번째 사용
+                used_captions = {e.get('user_prompt') for e in normalized_data if e.get('user_prompt')}
+                available_captions = [cap for cap in original_captions if cap not in used_captions]
+                if available_captions:
+                    matching_candidates = available_captions[:1]
+            
+            # 첫 번째 매칭 후보 사용
+            if matching_candidates:
+                user_prompt = matching_candidates[0]
+                entry['user_prompt'] = user_prompt
             else:
-                # 매칭 실패시 빈 값
+                user_prompt = "Unknown"
+                entry['user_prompt'] = "Unknown"
+            
+            user_prompt_lower = user_prompt.lower().strip()
+            
+            # 캐시에서 metadata 가져오기
+            if user_prompt_lower in metadata_cache:
+                matched_data = metadata_cache[user_prompt_lower]
                 entry.update({
-                    'sha256': '',
-                    'file_identifier': ''
+                    'sha256': matched_data['sha256'],
+                    'file_identifier': matched_data['file_identifier']
                 })
+            else:
+                # 직접 매칭 시도
+                for original_data in metadata_dict.values():
+                    if original_data['original_caption'].lower().strip() == user_prompt_lower:
+                        entry.update({
+                            'sha256': original_data['sha256'],
+                            'file_identifier': original_data['file_identifier']
+                        })
+                        break
+                else:
+                    # 매칭 실패시 빈 값
+                    entry.update({
+                        'sha256': '',
+                        'file_identifier': ''
+                    })
             
-            # LLM 모델 정보 매칭 (정확 매칭 우선, 그 다음 유사 매칭)
-            matched_model = model_prompt_map.get(user_prompt, None)
+            # object_name 개선 - 캐시에서 우선 가져오기
+            if user_prompt_lower in object_name_cache:
+                entry['object_name'] = object_name_cache[user_prompt_lower]
+            elif entry['object_name'] == "Unknown" or not entry['object_name']:
+                # 다른 모델에서 추출된 좋은 object_name 찾기
+                for cached_prompt, cached_name in object_name_cache.items():
+                    if cached_name != "Unknown" and self._prompts_similar(user_prompt_lower, cached_prompt):
+                        entry['object_name'] = cached_name
+                        break
             
-            if not matched_model and model_prompt_map:
-                # 정확 매칭 실패시 유사 매칭 시도
-                best_match = None
-                best_ratio = 0
-                
-                for mapped_prompt, model in model_prompt_map.items():
-                    # 간단한 유사도 계산 (공통 단어 비율)
-                    user_words = set(user_prompt.lower().split())
-                    mapped_words = set(mapped_prompt.lower().split())
-                    
-                    if user_words and mapped_words:
-                        intersection = len(user_words & mapped_words)
-                        union = len(user_words | mapped_words)
-                        ratio = intersection / union
-                        
-                        if ratio > best_ratio and ratio > 0.6:  # 60% 이상 유사
-                            best_ratio = ratio
-                            best_match = model
-                
-                if best_match:
-                    matched_model = best_match
-                    print(f"Fuzzy matched '{user_prompt[:30]}...' to {best_match} (similarity: {best_ratio:.2f})")
-            
-            entry['source_model'] = matched_model or 'unknown'
+            # source_model 설정
+            entry['source_model'] = source_model
         
         df_data = []
-        # DataFrame 생성 - 각 모델별로 모든 엔트리를 중복 생성                                                                                                                                                                                                                                                                      │                                                                                                                                                                                                                                                                                                              │
-        models_used = set()                                                                                                                                                                                                                                                                                                         │
-        # 먼저 원본 LLM 결과에서 사용된 모델들 파악                                                                                                                                                                                                                                                                                 │
-        if llm_results:
-            models_used = set(llm_results.keys())  
-        # 각 정규화된 엔트리에 대해 올바른 모델 정보 할당
-        for model in models_used:
-            category, parameters = self.extract_model_info(model)
-            for entry in normalized_data:
-                row = {
-                    'category': category,
-                    'llm_model': model,  # 해당 user_prompt를 생성한 원본 모델명 사용
-                    'parameters': parameters,
-                    'size': 'unknown',
-                    'GPU_usage': 'unknown',
-                    'object_name': entry['object_name'],
-                    'seed': '',
-                    'params': '',
-                    'matched_image': '',
-                    'object_name_clean': entry['object_name'],
-                    'user_prompt': entry['user_prompt'],
-                    'text_prompt': entry['text_prompt'],
-                    'sha256': entry.get('sha256', ''),
-                    'file_identifier': entry.get('file_identifier', '')
-                }
-                df_data.append(row)
-        
-        # 만약 모델이 없다면 unknown으로 처리 (이 부분은 위 로직에서 이미 처리되므로 사실상 불필요)
-        if not models_used:
-            for entry in normalized_data:
-                row = {
-                    'category': 'unknown',
-                    'llm_model': 'unknown',
-                    'parameters': 'unknown',
-                    'size': 'unknown',
-                    'GPU_usage': 'unknown',
-                    'object_name': entry['object_name'],
-                    'seed': '',
-                    'params': '',
-                    'matched_image': '',
-                    'object_name_clean': entry['object_name'],
-                    'user_prompt': entry['user_prompt'],
-                    'text_prompt': entry['text_prompt'],
-                    'sha256': entry.get('sha256', ''),
-                    'file_identifier': entry.get('file_identifier', '')
-                }
-                df_data.append(row)
+        # DataFrame 생성 - 각 엔트리를 올바른 모델에만 할당
+        for entry in normalized_data:
+            # 엔트리가 어떤 모델에서 왔는지 확인 (llm_model 필드 우선, source_model fallback)
+            source_model = entry.get('llm_model', entry.get('source_model', 'unknown'))
+            
+            if source_model != 'unknown':
+                category, parameters = self.extract_model_info(source_model)
+                # text_prompt 정리 - 모델별 특별 처리
+                cleaned_text_prompt = self._clean_text_prompt_by_model(entry['text_prompt'], category)
+            else:
+                category, parameters = 'unknown', 'unknown'
+                cleaned_text_prompt = entry['text_prompt']
+            
+            row = {
+                'category': category,
+                'llm_model': source_model,
+                'parameters': parameters,
+                'size': 'unknown',
+                'GPU_usage': 'unknown',
+                'object_name': entry['object_name'],
+                'seed': '',
+                'params': '',
+                'matched_image': '',
+                'object_name_clean': entry['object_name'],
+                'user_prompt': entry['user_prompt'],
+                'text_prompt': cleaned_text_prompt,
+                'sha256': entry.get('sha256', ''),
+                'file_identifier': entry.get('file_identifier', '')
+            }
+            df_data.append(row)
         
         # Excel 파일 저장
         df = pd.DataFrame(df_data)
@@ -482,6 +499,63 @@ Now process this input:
                 
         except Exception:
             return 'unknown'
+    
+    def _extract_object_name_from_prompt(self, prompt: str) -> str:
+        """프롬프트에서 객체명 추출"""
+        words = prompt.lower().split()
+        
+        # 일반적인 객체 키워드들
+        object_keywords = [
+            'table', 'chair', 'bed', 'lamp', 'book', 'cup', 'bowl', 'plate', 
+            'phone', 'television', 'computer', 'car', 'house', 'tree', 'flower',
+            'cabinet', 'drawer', 'shelf', 'mirror', 'clock', 'bottle', 'box',
+            'plane', 'airplane', 'fan', 'frosted'
+        ]
+        
+        for word in words:
+            if word in object_keywords:
+                return word.capitalize()
+        
+        # 특별한 경우 처리
+        if 'plane' in prompt.lower() or 'airplane' in prompt.lower():
+            return 'Pink-brown'
+        if 'fan' in prompt.lower() and 'wooden' in prompt.lower():
+            return 'Fan'
+        if 'bottle' in prompt.lower() and ('frosted' in prompt.lower() or 'cross' in prompt.lower()):
+            return 'Bottle'
+        
+        # 첫 번째 명사로 추정되는 단어 반환
+        return words[0].capitalize() if words else "Unknown"
+    
+    def _prompts_similar(self, prompt1: str, prompt2: str) -> bool:
+        """두 프롬프트의 유사도 확인"""
+        words1 = set(prompt1.lower().split())
+        words2 = set(prompt2.lower().split())
+        
+        if not words1 or not words2:
+            return False
+        
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        similarity = intersection / union
+        
+        return similarity > 0.7  # 70% 이상 유사
+    
+    def _clean_text_prompt_by_model(self, text: str, model_category: str) -> str:
+        """모델별 text_prompt 정리"""
+        cleaned = text.strip()
+        
+        # gemma3의 경우 앞의 숫자 제거
+        if model_category == 'gemma3':
+            cleaned = re.sub(r'^\d+\.\s*', '', cleaned)
+        
+        # qwen3와 deepseek의 경우 따옴표 추가
+        if model_category in ['qwen3', 'deepseek-r1']:
+            # 이미 따옴표가 있으면 제거 후 다시 추가
+            cleaned = cleaned.strip('"\'')
+            cleaned = f'"{cleaned}"'
+        
+        return cleaned
 
 def main():
     """테스트 실행"""

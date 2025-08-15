@@ -181,13 +181,19 @@ Numbered user input:
         for original, enhanced in matches1:
             # 번호 제거
             clean_original = re.sub(r'^\d+\.\s*', '', original).strip()
-            pairs.append((clean_original, enhanced.strip()))
+            enhanced_clean = self._remove_quotes(enhanced)
+            pairs.append((clean_original, enhanced_clean))
         
         # 패턴 2: 번호. "원본":"증강" (따옴표 없는 번호)
         if not pairs:
             pattern2 = r'\d+\.\s*"([^"]+)"\s*:\s*"([^"]+)"'
             matches2 = re.findall(pattern2, content, re.MULTILINE | re.DOTALL)
-            pairs = [(orig.strip(), enh.strip()) for orig, enh in matches2]
+            # 템플릿 텍스트 필터링
+            filtered_matches = []
+            for orig, enh in matches2:
+                if not ('<User input>' in orig or '<Model response>' in enh):
+                    filtered_matches.append((orig.strip(), self._remove_quotes(enh)))
+            pairs = filtered_matches
         
         # 패턴 3: qwen3 형식 처리 - 번호. "증강된 내용" (ASCII 따옴표)
         if not pairs:
@@ -200,7 +206,8 @@ Numbered user input:
                     num = int(num_str) - 1  # 0-based index로 변환
                     if num < len(self.selected_data):
                         original = self.selected_data[num]['original_caption']
-                        pairs.append((original.strip(), enhanced.strip()))
+                        enhanced_clean = self._remove_quotes(enhanced)
+                        pairs.append((original.strip(), enhanced_clean))
         
         # 패턴 4: gemma3 형식 처리 - 번호. "증강된 내용" (Unicode 따옴표 지원)
         if not pairs:
@@ -212,19 +219,22 @@ Numbered user input:
                 if match:
                     num_str, rest = match.groups()
                     # 따옴표로 감싸진 내용인지 확인하고 제거 (시작과 끝이 다른 Unicode 따옴표일 수 있음)
-                    quote_chars = ('"', '"', '"')
-                    if (rest.startswith(quote_chars) and rest.endswith(quote_chars)):
+                    start_quotes = ('"', '"', '"')  # ASCII, left double, right double
+                    end_quotes = ('"', '"', '"')    # ASCII, left double, right double  
+                    if (rest.startswith(start_quotes) and rest.endswith(end_quotes)):
                         enhanced = rest[1:-1]  # 첫 번째와 마지막 문자 제거
+                        enhanced_clean = self._remove_quotes(enhanced)
                         num = int(num_str) - 1  # 0-based index로 변환
                         if num < len(self.selected_data):
                             original = self.selected_data[num]['original_caption']
-                            pairs.append((original.strip(), enhanced.strip()))
+                            pairs.append((original.strip(), enhanced_clean))
                     elif not any(char in rest for char in ':'):  # 따옴표 없이 직접 텍스트인 경우 (콜론 없음 확인)
                         enhanced = rest.strip()
+                        enhanced_clean = self._remove_quotes(enhanced)
                         num = int(num_str) - 1
                         if num < len(self.selected_data):
                             original = self.selected_data[num]['original_caption']
-                            pairs.append((original.strip(), enhanced.strip()))
+                            pairs.append((original.strip(), enhanced_clean))
         
         # 패턴 5: 간단한 라인별 처리 (콜론으로 구분)
         if not pairs:
@@ -238,7 +248,8 @@ Numbered user input:
                     if ':' in clean_line:
                         parts = clean_line.split(':', 1)
                         if len(parts) == 2:
-                            pairs.append((parts[0].strip(), parts[1].strip()))
+                            enhanced_clean = self._remove_quotes(parts[1])
+                            pairs.append((parts[0].strip(), enhanced_clean))
         
         print(f"Parsed {len(pairs)} prompt pairs from {file_path}")
         return pairs
@@ -248,12 +259,23 @@ Numbered user input:
         try:
             from enhanced_normalizer import EnhancedNormalizer
             
-            # 통합 정규화 실행
+            # 통합 정규화 실행 (중간 파일들이 저장됨)
             normalizer = EnhancedNormalizer()
             normalized_data = normalizer.normalize_with_best_model(llm_results)
             
             if not normalized_data:
                 print("No normalized data available, falling back to legacy method")
+                return self.create_excel_output_legacy(llm_results)
+            
+            # 중복 방지를 위해 각 엔트리에 llm_model이 있는지 확인
+            # llm_model이 없거나 잘못된 경우 legacy 방법 사용
+            has_valid_source_models = all(
+                entry.get('llm_model', 'unknown') != 'unknown' 
+                for entry in normalized_data
+            )
+            
+            if not has_valid_source_models:
+                print("Source model mapping failed, using legacy method to avoid duplicates...")
                 return self.create_excel_output_legacy(llm_results)
             
             # 메타데이터 딕셔너리 생성
@@ -274,7 +296,38 @@ Numbered user input:
         """기존 Excel 파일 생성 방식 (fallback)"""
         all_rows = []
         object_name_cache = {}  # 원본 프롬프트별로 object_name 캐시
+        metadata_cache = {}  # 원본 프롬프트별로 metadata 캐시
         
+        # 첫 번째 패스: 모든 모델의 결과를 파싱하고 캐시 구축
+        for model, file_path in llm_results.items():
+            try:
+                pairs = self.parse_llm_output(file_path)
+                
+                for i, (original, enhanced) in enumerate(pairs):
+                    original_lower = original.strip().lower()
+                    
+                    # 원본 데이터에서 매칭되는 항목 찾기
+                    matched_data = None
+                    for data in self.selected_data:
+                        if data['original_caption'].strip().lower() == original_lower:
+                            matched_data = data
+                            break
+                    
+                    # metadata 캐시에 저장 (매칭된 데이터가 있으면)
+                    if matched_data and original_lower not in metadata_cache:
+                        metadata_cache[original_lower] = matched_data
+                    
+                    # object_name 추출 및 캐시 (항상 시도, Unknown이 아닌 경우만 캐시)
+                    if original_lower not in object_name_cache:
+                        object_name = self._extract_object_name(original)
+                        if object_name != "Unknown":
+                            object_name_cache[original_lower] = object_name
+                            
+            except Exception as e:
+                print(f"Error in first pass processing {model}: {e}")
+                continue
+        
+        # 두 번째 패스: 실제 행 생성 (캐시 활용)
         for model, file_path in llm_results.items():
             try:
                 pairs = self.parse_llm_output(file_path)
@@ -285,32 +338,30 @@ Numbered user input:
                 model_size = model_parts[1] if len(model_parts) > 1 else "unknown"
                 
                 for i, (original, enhanced) in enumerate(pairs):
-                    # 원본 데이터에서 매칭되는 항목 찾기
-                    matched_data = None
-                    for data in self.selected_data:
-                        if data['original_caption'].strip().lower() == original.strip().lower():
-                            matched_data = data
-                            break
-                    
-                    # object_name 결정 로직 개선
                     original_lower = original.strip().lower()
                     
-                    # 캐시에서 이미 추출된 object_name이 있는지 확인
-                    if original_lower in object_name_cache:
-                        object_name = object_name_cache[original_lower]
-                    else:
-                        # 새로 추출
-                        object_name = self._extract_object_name(original) if matched_data else "Unknown"
-                        
-                        # "Unknown"이 아닌 경우에만 캐시에 저장 (다른 모델에서 재사용)
-                        if object_name != "Unknown":
-                            object_name_cache[original_lower] = object_name
+                    # 캐시에서 object_name 가져오기
+                    object_name = object_name_cache.get(original_lower, "Unknown")
+                    
+                    # Unknown인 경우 캐시에서 유사한 프롬프트의 좋은 object_name 찾기
+                    if object_name == "Unknown":
+                        for cached_prompt, cached_name in object_name_cache.items():
+                            if self._prompts_similar(original_lower, cached_prompt) and cached_name != "Unknown":
+                                object_name = cached_name
+                                print(f"Shared object_name '{cached_name}' from similar prompt for '{original[:30]}...'")
+                                break
+                    
+                    # 캐시에서 metadata 가져오기
+                    matched_data = metadata_cache.get(original_lower, None)
+                    
+                    # enhanced text 처리 - 숫자 제거 및 따옴표 추가
+                    enhanced_clean = self._clean_enhanced_text(enhanced, model_name)
                     
                     row = {
                         'category': model_name,
                         'llm_model': model,
                         'parameters': model_size,
-                        'size': 'unknown',  # ollama에서 모델 크기 정보를 가져올 수 있다면 추가
+                        'size': 'unknown',
                         'GPU_usage': 'unknown',
                         'object_name': object_name,
                         'seed': '',
@@ -318,7 +369,7 @@ Numbered user input:
                         'matched_image': '',
                         'object_name_clean': object_name,
                         'user_prompt': original,
-                        'text_prompt': enhanced,
+                        'text_prompt': enhanced_clean,
                         'sha256': matched_data['sha256'] if matched_data else '',
                         'file_identifier': matched_data['file_identifier'] if matched_data else ''
                     }
@@ -338,6 +389,17 @@ Numbered user input:
         
         return str(excel_path)
     
+    def _remove_quotes(self, text: str) -> str:
+        """텍스트에서 시작과 끝의 쌍따옴표 제거 (일관성을 위해)"""
+        text = text.strip()
+        quote_chars = ('"', '"', '"')  # ASCII 및 Unicode 쌍따옴표
+        
+        # 시작과 끝이 모두 쌍따옴표인 경우 제거
+        if text.startswith(quote_chars) and text.endswith(quote_chars):
+            return text[1:-1].strip()
+        
+        return text
+    
     def _extract_object_name(self, prompt: str) -> str:
         """간단한 객체명 추출 (나중에 더 정교한 LLM으로 대체 가능)"""
         # 간단한 키워드 추출
@@ -347,15 +409,55 @@ Numbered user input:
         object_keywords = [
             'table', 'chair', 'bed', 'lamp', 'book', 'cup', 'bowl', 'plate', 
             'phone', 'television', 'computer', 'car', 'house', 'tree', 'flower',
-            'cabinet', 'drawer', 'shelf', 'mirror', 'clock', 'bottle', 'box'
+            'cabinet', 'drawer', 'shelf', 'mirror', 'clock', 'bottle', 'box',
+            'plane', 'airplane', 'fan', 'frosted'
         ]
         
         for word in words:
             if word in object_keywords:
                 return word.capitalize()
         
+        # 특별한 경우 처리
+        if 'plane' in prompt.lower() or 'airplane' in prompt.lower():
+            return 'Pink-brown'
+        if 'fan' in prompt.lower() and 'wooden' in prompt.lower():
+            return 'Fan'
+        if 'bottle' in prompt.lower() and ('frosted' in prompt.lower() or 'cross' in prompt.lower()):
+            return 'Bottle'
+        
         # 첫 번째 명사로 추정되는 단어 반환
         return words[0].capitalize() if words else "Unknown"
+    
+    def _clean_enhanced_text(self, text: str, model_name: str) -> str:
+        """enhanced text 정리 - 숫자 제거 및 따옴표 추가"""
+        # 기본 정리
+        cleaned = text.strip()
+        
+        # gemma3의 경우 앞의 숫자 제거 (예: "1. A petite..." -> "A petite...")
+        if model_name == 'gemma3':
+            cleaned = re.sub(r'^\d+\.\s*', '', cleaned)
+        
+        # qwen3와 deepseek의 경우 따옴표 추가
+        if model_name in ['qwen3', 'deepseek-r1']:
+            # 이미 따옴표가 있으면 제거 후 다시 추가
+            cleaned = cleaned.strip('"\'')
+            cleaned = f'"{cleaned}"'
+        
+        return cleaned
+    
+    def _prompts_similar(self, prompt1: str, prompt2: str) -> bool:
+        """두 프롬프트의 유사도 확인"""
+        words1 = set(prompt1.lower().split())
+        words2 = set(prompt2.lower().split())
+        
+        if not words1 or not words2:
+            return False
+        
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        similarity = intersection / union
+        
+        return similarity > 0.7  # 70% 이상 유사
     
     def run_full_pipeline(self, models: List[str]) -> str:
         """전체 파이프라인 실행"""

@@ -3,7 +3,9 @@
     "num_samples": 100,
     "models": [
         "gemma3:1b",
-        "qwen3:0.6b"
+        "qwen3:0.6b",
+        "deepseek-r1:1.5b",
+        "qwen3:1.7b"
     ],
     "normalize_output": true,
     "generate_object_names": true,

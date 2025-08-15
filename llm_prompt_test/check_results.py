@@ -1,38 +1,36 @@
-#!/usr/bin/env python3
-"""
-Check the results of the improved pipeline
-"""
-
+#\!/usr/bin/env python3
 import pandas as pd
 
-def check_results():
-    excel_path = "/home/sr/TRELLIS/llm_prompt_test/prompt_generation_outputs/automated_prompt_results.xlsx"
-    
-    # Excel 파일 읽기
-    df = pd.read_excel(excel_path)
-    
-    print("Results summary:")
-    print(f"Total rows: {len(df)}")
-    print(f"Unique models: {df['llm_model'].unique()}")
-    print(f"Unique original prompts: {df['user_prompt'].nunique()}")
-    print()
-    
-    print("Object names by model:")
-    for model in df['llm_model'].unique():
-        model_df = df[df['llm_model'] == model]
-        print(f"\n{model}:")
-        for i, row in model_df.iterrows():
-            print(f"  {row['user_prompt']} -> {row['object_name']}")
-    
-    print("\nObject name comparison:")
-    for prompt in df['user_prompt'].unique():
-        prompt_df = df[df['user_prompt'] == prompt]
-        object_names = prompt_df['object_name'].unique()
-        print(f"'{prompt}':")
-        for model in prompt_df['llm_model'].unique():
-            model_row = prompt_df[prompt_df['llm_model'] == model].iloc[0]
-            print(f"  {model}: {model_row['object_name']}")
-        print()
+df = pd.read_excel('prompt_generation_outputs/automated_prompt_results.xlsx')
+print('=== Results Summary ===')
+print(f'Total rows: {len(df)}')
+print()
 
-if __name__ == "__main__":
-    check_results()
+print('=== Object Names by Model ===')
+for model in df['llm_model'].unique():
+    model_data = df[df['llm_model'] == model]
+    print(f'{model}:')
+    for obj_name in model_data['object_name'].unique():
+        count = len(model_data[model_data['object_name'] == obj_name])
+        print(f'  {obj_name}: {count}')
+    print()
+
+print('=== SHA256 and file_identifier status ===')
+for model in df['llm_model'].unique():
+    model_data = df[df['llm_model'] == model]
+    empty_sha256 = len(model_data[model_data['sha256'] == ''])
+    empty_file_id = len(model_data[model_data['file_identifier'] == ''])
+    print(f'{model}: {empty_sha256} empty sha256, {empty_file_id} empty file_identifier')
+
+print()
+print('=== Text Prompt Samples ===')
+for model in df['llm_model'].unique():
+    model_data = df[df['llm_model'] == model]
+    sample = model_data.iloc[0]
+    print(f'{model}:')
+    print(f'  text_prompt: {sample["text_prompt"][:100]}...')
+    print()
+
+print('=== First few rows ===')
+print(df[['llm_model', 'object_name', 'text_prompt', 'sha256', 'file_identifier']].head(10))
+EOF < /dev/null

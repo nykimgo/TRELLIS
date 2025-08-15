@@ -24,18 +24,19 @@ You are an expert text processing assistant. Your task is to process LLM-generat
 
 Given raw LLM output containing original prompts and their enhanced versions, extract and return the data in this exact JSON format for each pair:
 
-{"object_name": "<main_object>", "user_prompt": "<original_short_prompt>", "text_prompt": "<enhanced_detailed_prompt>"}
+{"object_name": "<main_object>", "text_prompt": "<enhanced_detailed_prompt>", "llm_model": "<llm_model_name>"}
 
 Rules:
-1. object_name: Extract the main object (1-3 words, singular form, no articles)
-2. user_prompt: Original short prompt (clean, no numbering)  
-3. text_prompt: Enhanced detailed prompt (clean, descriptive)
+1. object_name: Extract the main object from the enhanced prompt (1-2 words, singular form, no articles) 
+2. text_prompt: Enhanced detailed prompt (clean, descriptive)
+3. llm_model: The name of the LLM model that generated this specific prompt (extract from section headers like "=== Output from gemma3:1b ===")
 4. Return ONLY valid JSON objects, one per line
 5. No explanations, headers, or additional text
 
 Examples:
-Input: 1. "Dark wooden table":"A dark wooden side table with carved legs..."
-Output: {"object_name": "Table", "user_prompt": "Dark wooden table", "text_prompt": "A dark wooden side table with carved legs and a smooth surface finish"}
+Input: === Output from gemma3:1b ===
+1. "Dark wooden table":"A dark wooden side table with carved legs..."
+Output: {"object_name": "Table", "text_prompt": "A dark wooden side table with carved legs and a smooth surface finish", "llm_model": "gemma3:1b"}
 
 Now process this input:
 
@@ -234,6 +235,9 @@ Now process this input:
     def normalize_with_external_api(self, llm_results: Dict[str, str]) -> List[Dict]:
         """외부 API를 사용한 고속 정규화"""
         
+        # 출력 디렉토리 설정
+        output_dir = Path(list(llm_results.values())[0]).parent
+        
         # 모든 LLM 출력을 하나로 합치기
         combined_content = ""
         for model, file_path in llm_results.items():
@@ -254,6 +258,16 @@ Now process this input:
             print(f"Trying {api_name.upper()} API...")
             start_time = time.time()
             
+            # 전송할 프롬프트 저장
+            prompt_file = output_dir / f"prompt_sent_to_{api_name}.txt"
+            with open(prompt_file, 'w', encoding='utf-8') as f:
+                f.write(f"=== Prompt sent to {api_name.upper()} API ===\n")
+                f.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Model: {self.config[api_name]['model']}\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(full_prompt)
+            print(f"📝 Saved prompt to: {prompt_file}")
+            
             # API 호출
             if api_name == "groq":
                 result = self.call_groq_api(full_prompt)
@@ -270,15 +284,42 @@ Now process this input:
                 elapsed = time.time() - start_time
                 print(f"✅ {api_name.upper()} API successful! ({elapsed:.1f}s)")
                 
-                # 결과 저장
-                output_file = Path(list(llm_results.values())[0]).parent / f"external_api_normalized_{api_name}.txt"
-                with open(output_file, 'w', encoding='utf-8') as f:
+                # 원본 응답 저장 (가공되지 않은 상태)
+                raw_response_file = output_dir / f"raw_response_from_{api_name}.txt"
+                with open(raw_response_file, 'w', encoding='utf-8') as f:
+                    f.write(f"=== Raw response from {api_name.upper()} API ===\n")
+                    f.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"Model: {self.config[api_name]['model']}\n")
+                    f.write(f"Response time: {elapsed:.1f}s\n")
+                    f.write("=" * 60 + "\n\n")
                     f.write(result)
+                print(f"📥 Saved raw response to: {raw_response_file}")
+                
+                # 정규화된 결과 저장 (기존 코드 유지)
+                normalized_file = output_dir / f"external_api_normalized_{api_name}.txt"
+                with open(normalized_file, 'w', encoding='utf-8') as f:
+                    f.write(result)
+                print(f"📋 Saved normalized result to: {normalized_file}")
                 
                 # JSON 파싱 및 모델 정보 추가
                 normalized_data = self.parse_json_output(result)
                 
                 if normalized_data:
+                    # 파싱된 JSON 데이터도 별도 저장
+                    parsed_json_file = output_dir / f"parsed_json_from_{api_name}.json"
+                    with open(parsed_json_file, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            "metadata": {
+                                "api_used": api_name,
+                                "model": self.config[api_name]['model'],
+                                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+                                "response_time": f"{elapsed:.1f}s",
+                                "total_entries": len(normalized_data)
+                            },
+                            "normalized_data": normalized_data
+                        }, f, indent=2, ensure_ascii=False)
+                    print(f"🔍 Saved parsed JSON to: {parsed_json_file}")
+                    
                     # 외부 API 사용시 통합된 모델 정보 추가
                     for entry in normalized_data:
                         if 'api_used' not in entry:
@@ -288,8 +329,23 @@ Now process this input:
                     return normalized_data
                 else:
                     print(f"⚠️ {api_name.upper()} returned data but JSON parsing failed")
+                    # 파싱 실패한 경우에도 실패 파일 저장
+                    failed_file = output_dir / f"parsing_failed_{api_name}.txt"
+                    with open(failed_file, 'w', encoding='utf-8') as f:
+                        f.write(f"=== JSON Parsing Failed for {api_name.upper()} ===\n")
+                        f.write(f"Original response:\n{result}")
+                    print(f"❌ Saved failed parsing attempt to: {failed_file}")
             else:
                 print(f"❌ {api_name.upper()} API failed")
+                # API 호출 실패 로그 저장
+                failed_file = output_dir / f"api_call_failed_{api_name}.txt"
+                with open(failed_file, 'w', encoding='utf-8') as f:
+                    f.write(f"=== API Call Failed for {api_name.upper()} ===\n")
+                    f.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"Model: {self.config[api_name]['model']}\n")
+                    f.write("Prompt that was attempted to be sent:\n")
+                    f.write("=" * 60 + "\n")
+                    f.write(full_prompt)
         
         print("❌ All external APIs failed, falling back to local method")
         return self.fallback_normalize(llm_results)
@@ -306,12 +362,17 @@ Now process this input:
                     data = json.loads(line)
                     
                     # 필수 필드 확인
-                    if all(key in data for key in ['object_name', 'user_prompt', 'text_prompt']):
-                        normalized_data.append({
+                    if all(key in data for key in ['object_name', 'text_prompt']):
+                        entry = {
                             'object_name': str(data['object_name']).strip(),
-                            'user_prompt': str(data['user_prompt']).strip(),
                             'text_prompt': str(data['text_prompt']).strip()
-                        })
+                        }
+                        
+                        # llm_model 필드가 있으면 추가 (선택적)
+                        if 'llm_model' in data:
+                            entry['llm_model'] = str(data['llm_model']).strip()
+                        
+                        normalized_data.append(entry)
                         
                 except json.JSONDecodeError:
                     continue
