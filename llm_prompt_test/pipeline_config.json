@@ -1,19 +1,8 @@
 {
-    "metadata_path": "../datasets/HSSD/metadata.csv",
+    "metadata_path": "/mnt/nas/Benchmark_Datatset/Toys4k/metadata.csv",
     "num_samples": 100,
-    "models": [
-        "gemma3:1b",
-        "qwen3:0.6b",
-        "deepseek-r1:1.5b",
-        "qwen3:1.7b"
-    ],
+    "models": ["deepseek-r1:1.5b"],
     "normalize_output": true,
     "generate_object_names": true,
-    "comment": "Configuration for automated prompt augmentation pipeline",
-    "model_notes": {
-        "gemma3:1b": "Fast, lightweight model for quick testing",
-        "qwen3:1.7b": "Good balance of speed and quality",
-        "qwen3:14b": "Higher quality but slower",
-        "deepseek-r1:1.5b": "Specialized reasoning model"
-    }
+    "comment": "Configuration for automated prompt augmentation pipeline"
 }

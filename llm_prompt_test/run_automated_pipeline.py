@@ -107,14 +107,16 @@ def check_ollama_models(models):
         print(f"Error checking models: {e}")
         return []
 
-def run_pipeline(metadata_path, num_samples, models, normalize_output=True, generate_object_names=True):
+def run_pipeline(metadata_path, num_samples, models, normalize_output=True, generate_object_names=True, use_random=False, csv_file=None):
     """전체 파이프라인 실행"""
     print("=== Starting Automated Prompt Augmentation Pipeline ===")
     print(f"Metadata: {metadata_path}")
+    print(f"CSV file: {csv_file if csv_file else 'None (using metadata)'}")
     print(f"Samples: {num_samples}")
     print(f"Models: {models}")
     print(f"Normalize output: {normalize_output}")
     print(f"Generate object names: {generate_object_names}")
+    print(f"Random sampling: {use_random}")
     print()
     
     # 1. 의존성 확인
@@ -135,7 +137,7 @@ def run_pipeline(metadata_path, num_samples, models, normalize_output=True, gene
     try:
         from automated_prompt_generator import PromptGenerator
         
-        generator = PromptGenerator(metadata_path, num_samples)
+        generator = PromptGenerator(metadata_path, num_samples, use_random=use_random, csv_file=csv_file)
         excel_path = generator.run_full_pipeline(valid_models)
         
         if not excel_path:
@@ -228,17 +230,44 @@ def main():
         except Exception as e:
             print(f"Error loading config file: {e}")
     
-    # 명령행 인자 처리
-    if len(sys.argv) > 1:
-        if sys.argv[1] in ['-h', '--help']:
-            print("Usage: python run_automated_pipeline.py [metadata_path] [num_samples]")
-            print(f"Current config: {json.dumps(config, indent=2)}")
-            print(f"\nTo customize, create {config_file} with your settings")
+    # 명령행 인자 처리 - 더 안전한 방식
+    use_random = False
+    csv_file = None
+    
+    # 먼저 help 확인
+    if len(sys.argv) > 1 and sys.argv[1] in ['-h', '--help']:
+        print("Usage: python run_automated_pipeline.py [metadata_path] [num_samples] [--random] [--use-csv CSV_FILE]")
+        print("Options:")
+        print("  --random: Use random sampling instead of fixed seed")
+        print("  --use-csv CSV_FILE: Use existing CSV sample file instead of metadata.csv")
+        print(f"Current config: {json.dumps(config, indent=2)}")
+        print(f"\nTo customize, create {config_file} with your settings")
+        return
+    
+    # 옵션들을 먼저 파싱하고 제거
+    args_copy = sys.argv[1:]  # 원본 보존
+    
+    # --random 옵션 확인
+    if '--random' in args_copy:
+        use_random = True
+        args_copy.remove('--random')
+    
+    # --use-csv 옵션 확인
+    if '--use-csv' in args_copy:
+        csv_index = args_copy.index('--use-csv')
+        if csv_index + 1 < len(args_copy):
+            csv_file = args_copy[csv_index + 1]
+            args_copy.remove('--use-csv')
+            args_copy.remove(csv_file)
+            print(f"Using CSV file: {csv_file}")
+        else:
+            print("Error: --use-csv requires a file path")
             return
-        
-        config['metadata_path'] = sys.argv[1]
-    else:
-        # 메타데이터 경로가 주어지지 않았거나 파일이 없으면 사용자 선택
+    
+    # 남은 positional arguments 처리
+    if len(args_copy) > 0:
+        config['metadata_path'] = args_copy[0]
+    elif not csv_file:  # CSV 파일이 없고 metadata_path도 없으면 사용자 선택
         if not os.path.exists(config['metadata_path']):
             print(f"Default metadata file not found: {config['metadata_path']}")
             metadata_path = get_metadata_path()
@@ -247,8 +276,8 @@ def main():
                 return
             config['metadata_path'] = metadata_path
     
-    if len(sys.argv) > 2:
-        config['num_samples'] = int(sys.argv[2])
+    if len(args_copy) > 1:
+        config['num_samples'] = int(args_copy[1])
     
     # 파이프라인 실행
     success = run_pipeline(
@@ -256,7 +285,9 @@ def main():
         config['num_samples'], 
         config['models'],
         config['normalize_output'],
-        config['generate_object_names']
+        config['generate_object_names'],
+        use_random,
+        csv_file
     )
     
     if success:

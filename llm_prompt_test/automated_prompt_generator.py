@@ -17,14 +17,18 @@ import pandas as pd
 import numpy as np
 
 class PromptGenerator:
-    def __init__(self, metadata_path: str, num_samples: int = 100):
+    def __init__(self, metadata_path: str, num_samples: int = 100, use_random: bool = False, csv_file: str = None):
         """
         Args:
             metadata_path: metadata.csv 파일 경로
             num_samples: 처리할 랜덤 샘플 수
+            use_random: True면 랜덤 시드 사용, False면 고정 시드(42) 사용
+            csv_file: 기존 샘플 CSV 파일 경로 (이 값이 있으면 metadata_path 대신 사용)
         """
         self.metadata_path = metadata_path
         self.num_samples = num_samples
+        self.use_random = use_random
+        self.csv_file = csv_file
         self.selected_data = []
         
         # 출력 디렉토리 생성
@@ -32,60 +36,168 @@ class PromptGenerator:
         self.output_dir.mkdir(exist_ok=True)
         
     def load_and_sample_data(self) -> List[Dict]:
-        """metadata.csv에서 랜덤 샘플링하고 짧은 캡션 선택"""
+        """metadata.csv에서 랜덤 샘플링하고 짧은 캡션 선택 또는 CSV 파일에서 로드"""
+        
+        # CSV 파일이 지정되어 있으면 그것을 사용
+        if self.csv_file and os.path.exists(self.csv_file):
+            return self.load_from_csv(self.csv_file)
+        
         print(f"Loading metadata from {self.metadata_path}...")
         
         # CSV 읽기
         df = pd.read_csv(self.metadata_path)
         print(f"Total records: {len(df)}")
         
-        # 랜덤 샘플링
-        sampled_df = df.sample(n=min(self.num_samples, len(df)), random_state=42)
-        print(f"Sampled {len(sampled_df)} records")
-        
+        # 정확히 num_samples 개의 유효한 샘플을 얻을 때까지 반복
         selected_data = []
+        attempts = 0
+        max_attempts = 10
         
-        for _, row in sampled_df.iterrows():
-            # captions 컬럼에서 짧은 캡션 선택
-            captions_str = row['captions']
+        # 사용된 인덱스 추적 (중복 방지)
+        used_indices = set()
+        
+        while len(selected_data) < self.num_samples and attempts < max_attempts:
+            attempts += 1
             
-            # NaN/null 값 체크
-            if pd.isna(captions_str) or captions_str is None:
-                print(f"Skipping row with null captions: {row.get('sha256', 'unknown')}")
-                continue
+            # 남은 필요 개수 계산
+            needed = self.num_samples - len(selected_data)
             
-            # float 타입 체크 (NaN이 float로 읽힐 수 있음)
-            if isinstance(captions_str, float):
-                print(f"Skipping row with float captions: {row.get('sha256', 'unknown')}")
-                continue
+            # 여유분을 두고 샘플링 (유효하지 않은 것들 고려)
+            sample_size = min(needed * 2, len(df) - len(used_indices))
             
-            try:
-                # JSON 형식의 captions 파싱
-                captions = json.loads(captions_str.replace("'", '"'))
-                
-                # 4-8 단어 길이의 캡션 필터링
-                short_captions = [
-                    cap for cap in captions 
-                    if 4 <= len(cap.split()) <= 8
-                ]
-                
-                if short_captions:
-                    # 가장 짧은 캡션 선택
-                    selected_caption = min(short_captions, key=lambda x: len(x.split()))
+            if sample_size <= 0:
+                print(f"⚠️ No more data to sample from. Got {len(selected_data)} valid samples.")
+                break
+            
+            # 사용되지 않은 인덱스에서 샘플링
+            available_indices = list(set(df.index) - used_indices)
+            if not available_indices:
+                print(f"⚠️ No more available data. Got {len(selected_data)} valid samples.")
+                break
+            
+            # 랜덤 샘플링
+            if self.use_random:
+                sampled_indices = np.random.choice(available_indices, 
+                                                 size=min(sample_size, len(available_indices)), 
+                                                 replace=False)
+            else:
+                # 고정 시드 사용
+                np.random.seed(42 + attempts)  # attempts를 더해서 매번 다른 샘플 얻기
+                sampled_indices = np.random.choice(available_indices, 
+                                                 size=min(sample_size, len(available_indices)), 
+                                                 replace=False)
+            
+            sampled_df = df.loc[sampled_indices]
+            print(f"Attempt {attempts}: Sampling {len(sampled_df)} records to get {needed} more valid samples")
+            
+            # 샘플링된 인덱스를 사용됨으로 표시
+            used_indices.update(sampled_indices)
+            
+            for _, row in sampled_df.iterrows():
+                if len(selected_data) >= self.num_samples:
+                    break
                     
-                    selected_data.append({
-                        'sha256': row['sha256'],
-                        'file_identifier': row['file_identifier'],
-                        'original_caption': selected_caption,
-                        'all_captions': captions
-                    })
+                # captions 컬럼에서 짧은 캡션 선택
+                captions_str = row['captions']
                 
-            except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
-                print(f"Error parsing captions for {row.get('sha256', 'unknown')}: {e}")
-                continue
+                # NaN/null 값 체크
+                if pd.isna(captions_str) or captions_str is None:
+                    continue
+                
+                # float 타입 체크 (NaN이 float로 읽힐 수 있음)
+                if isinstance(captions_str, float):
+                    continue
+                
+                try:
+                    # JSON 형식의 captions 파싱
+                    captions = json.loads(captions_str.replace("'", '"'))
+                    
+                    # 4-8 단어 길이의 캡션 필터링
+                    short_captions = [
+                        cap for cap in captions 
+                        if 4 <= len(cap.split()) <= 8
+                    ]
+                    
+                    if short_captions:
+                        # 가장 짧은 캡션 선택
+                        selected_caption = min(short_captions, key=lambda x: len(x.split()))
+                        
+                        selected_data.append({
+                            'sha256': row['sha256'],
+                            'file_identifier': row['file_identifier'],
+                            'original_caption': selected_caption,
+                            'all_captions': captions
+                        })
+                    
+                except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+                    continue
+        
+        sampling_type = "random" if self.use_random else "fixed seed"
+        print(f"Final result: {len(selected_data)} valid samples obtained ({sampling_type})")
+        
+        if len(selected_data) < self.num_samples:
+            print(f"⚠️ Warning: Only found {len(selected_data)} valid samples out of {self.num_samples} requested")
         
         self.selected_data = selected_data
         print(f"Successfully selected {len(selected_data)} items with short captions")
+        
+        # CSV 파일로 샘플 저장 (CSV 파일로부터 로드한 경우가 아닐 때만)
+        if not self.csv_file:
+            self.save_samples_to_csv()
+        
+        return selected_data
+    
+    def save_samples_to_csv(self):
+        """선택된 샘플을 CSV 파일로 저장"""
+        if not self.selected_data:
+            return
+        
+        # 랜덤/고정 샘플 구분을 위한 파일명
+        suffix = "random" if self.use_random else "fixed"
+        csv_filename = f"sampled_data_{self.num_samples}_{suffix}.csv"
+        csv_path = self.output_dir / csv_filename
+        
+        # DataFrame으로 변환하여 저장
+        df_data = []
+        for item in self.selected_data:
+            df_data.append({
+                'sha256': item['sha256'],
+                'file_identifier': item['file_identifier'],
+                'original_caption': item['original_caption'],
+                'all_captions': json.dumps(item['all_captions'], ensure_ascii=False)
+            })
+        
+        df = pd.DataFrame(df_data)
+        df.to_csv(csv_path, index=False, encoding='utf-8')
+        print(f"📁 Saved {len(df_data)} samples to: {csv_path}")
+        
+        return str(csv_path)
+    
+    def load_from_csv(self, csv_path: str) -> List[Dict]:
+        """CSV 파일에서 샘플 데이터 로드"""
+        print(f"Loading samples from CSV: {csv_path}")
+        
+        df = pd.read_csv(csv_path)
+        print(f"Loaded {len(df)} records from CSV")
+        
+        selected_data = []
+        for _, row in df.iterrows():
+            try:
+                # all_captions JSON 파싱
+                all_captions = json.loads(row['all_captions'])
+                
+                selected_data.append({
+                    'sha256': row['sha256'],
+                    'file_identifier': row['file_identifier'],
+                    'original_caption': row['original_caption'],
+                    'all_captions': all_captions
+                })
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"Error parsing CSV row: {e}")
+                continue
+        
+        self.selected_data = selected_data
+        print(f"Successfully loaded {len(selected_data)} items from CSV")
         return selected_data
     
     def generate_prompts_file(self, output_file: str = "prompts.txt") -> str:
@@ -236,7 +348,34 @@ Numbered user input:
                             original = self.selected_data[num]['original_caption']
                             pairs.append((original.strip(), enhanced_clean))
         
-        # 패턴 5: 간단한 라인별 처리 (콜론으로 구분)
+        # 패턴 5: DeepSeek 형식 처리 - 큰따옴표 안의 내용을 라인별로 분석
+        if not pairs:
+            lines = content.split('\n')
+            in_quoted_section = False
+            
+            for line in lines:
+                line = line.strip()
+                
+                # 큰따옴표로 시작하는 라인 찾기 (결과 섹션 시작)
+                if line.startswith('"') and not in_quoted_section:
+                    in_quoted_section = True
+                    line = line[1:]  # 첫 번째 큰따옴표 제거
+                
+                if in_quoted_section:
+                    # 마지막 큰따옴표로 끝나는 경우 (결과 섹션 종료)
+                    if line.endswith('"') and not line.endswith('""'):
+                        line = line[:-1]  # 마지막 큰따옴표 제거
+                        in_quoted_section = False
+                    
+                    # 번호. '원본': 증강된내용 패턴 찾기
+                    match = re.match(r"(\d+)\.\s*'([^']+)':\s*(.+)", line)
+                    if match:
+                        num_str, original, enhanced = match.groups()
+                        original_clean = original.strip()
+                        enhanced_clean = enhanced.strip().rstrip('.')
+                        pairs.append((original_clean, enhanced_clean))
+        
+        # 패턴 6: 간단한 라인별 처리 (콜론으로 구분)
         if not pairs:
             lines = content.split('\n')
             for line in lines:
@@ -282,7 +421,8 @@ Numbered user input:
             metadata_dict = {data['original_caption']: data for data in self.selected_data}
             
             # 통합 Excel 파일 생성
-            excel_path = self.output_dir / "automated_prompt_results.xlsx"
+            models = list(llm_results.keys())  # llm_results에서 모델 이름 추출
+            excel_path = self._create_output_path(models)
             result_path = normalizer.create_unified_excel(normalized_data, metadata_dict, str(excel_path), llm_results)
             
             return result_path
@@ -381,7 +521,7 @@ Numbered user input:
         
         # DataFrame 생성 및 Excel 저장
         df = pd.DataFrame(all_rows)
-        excel_path = self.output_dir / "automated_prompt_results.xlsx"
+        excel_path = self._create_output_path(list(llm_results.keys()))
         df.to_excel(excel_path, index=False)
         
         print(f"Legacy Excel file created: {excel_path}")
@@ -427,6 +567,68 @@ Numbered user input:
         
         # 첫 번째 명사로 추정되는 단어 반환
         return words[0].capitalize() if words else "Unknown"
+    
+    def _create_output_path(self, models: List[str]) -> Path:
+        """CSV 파일명과 모델 정보를 기반으로 출력 파일 경로 생성"""
+        # CSV 파일명에서 기본 이름 추출
+        if self.csv_file:
+            csv_name = Path(self.csv_file).stem  # 확장자 제거
+        else:
+            csv_name = "metadata_sample"
+        
+        # 모델 개수 계산
+        num_models = len(models)
+        
+        # 모델 파라미터 크기 분석하여 범위 결정
+        model_range = self._get_model_range(models)
+        
+        # 출력 디렉토리 생성 (CSV 파일명 기반)
+        output_subdir = self.output_dir / csv_name
+        output_subdir.mkdir(exist_ok=True)
+        
+        filename = f"prompt_results_{num_models}_{model_range}"
+        # 파일명 생성
+        for model_name in models:
+            if ':' in model_name:
+                model_cat = model_name.split(':', 1)[0]
+            filename += f"_{model_cat}"
+        filename += ".xlsx"
+        return output_subdir / filename
+    
+    def _extract_model_params(self, model_name: str) -> float:
+        """모델명에서 파라미터 크기 추출 (예: qwen3:32b-q8_0 -> 32)"""
+        try:
+            # ':' 이후 부분 추출
+            if ':' in model_name:
+                param_part = model_name.split(':', 1)[1]
+                # 'b' 앞의 숫자 추출
+                import re
+                match = re.search(r'(\d+(?:\.\d+)?)b', param_part, re.IGNORECASE)
+                if match:
+                    return float(match.group(1))
+        except:
+            pass
+        return 0
+    
+    def _get_model_range(self, models: List[str]) -> str:
+        """모델들의 파라미터 범위를 분석하여 small/medium/large 반환"""
+        params = []
+        for model in models:
+            param_size = self._extract_model_params(model)
+            if param_size > 0:
+                params.append(param_size)
+        
+        if not params:
+            return "unknown"
+        
+        max_param = max(params)
+        
+        if max_param <= 10:
+            return "small"
+        elif max_param <= 20:
+            return "medium"
+        else:
+            return "large"
     
     def _clean_enhanced_text(self, text: str, model_name: str) -> str:
         """enhanced text 정리 - 숫자 제거 및 따옴표 추가"""

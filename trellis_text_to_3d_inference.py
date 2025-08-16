@@ -238,10 +238,20 @@ class TrellisInferenceManager:
         # Replace ':' with '_' and any other invalid characters
         return model_name.replace(':', '_')
     
-    def process_batch_from_csv(self, csv_path: str, config: Dict, output_dir: str = "./outputs") -> None:
-        """Process batch prompts from CSV file"""
+    def process_batch_from_file(self, file_path: str, config: Dict, output_dir: str = "./outputs") -> None:
+        """Process batch prompts from CSV or Excel file"""
         try:
-            df = pd.read_csv(csv_path)
+            # 파일 확장자 확인
+            _, extension = os.path.splitext(file_path)
+            extension = extension.lower()
+            
+            # 파일 형식에 따라 적절한 로더 사용
+            if extension == '.csv':
+                df = pd.read_csv(file_path)
+            elif extension in ['.xlsx', '.xls']:
+                df = pd.read_excel(file_path)
+            else:
+                raise ValueError(f"지원하지 않는 파일 형식입니다: {extension}. CSV 또는 Excel 파일만 지원됩니다.")
             
             # CSV 컬럼 확인
             prompt_column = None
@@ -250,15 +260,15 @@ class TrellisInferenceManager:
             elif 'prompt' in df.columns:
                 prompt_column = 'prompt'
             else:
-                logging.error("❌ CSV must have either 'text_prompt' or 'prompt' column")
+                logging.error("❌ File must have either 'text_prompt' or 'prompt' column")
                 return
             
             object_name_column = 'object_name' if 'object_name' in df.columns else None
             seed_column = 'seed' if 'seed' in df.columns else None
             models_column = 'llm_model' if 'llm_model' in df.columns else None
             
-            # CSV 데이터를 딕셔너리 리스트로 변환
-            csv_data = []
+            # 파일 데이터를 딕셔너리 리스트로 변환
+            file_data = []
             for _, row in df.iterrows():
                 if pd.notna(row[prompt_column]):
                     item = {
@@ -272,13 +282,13 @@ class TrellisInferenceManager:
                         ),
                         'llm_model': row[models_column] if models_column and pd.notna(row[models_column]) else None
                     }
-                    csv_data.append(item)
+                    file_data.append(item)
             
-            logging.info(f"📊 Processing {len(csv_data)} items from CSV")
-            self._process_csv_batch(csv_data, config, output_dir)
+            logging.info(f"📊 Processing {len(file_data)} items from {extension.upper()} file")
+            self._process_file_batch(file_data, config, output_dir)
             
         except Exception as e:
-            logging.error(f"❌ CSV processing failed: {e}")
+            logging.error(f"❌ File processing failed: {e}")
             raise
     
     def process_batch_from_yaml(self, yaml_path: str, output_dir: str = "./outputs") -> None:
@@ -295,8 +305,8 @@ class TrellisInferenceManager:
         logging.info(f"📊 Processing {len(prompts)} prompts from YAML")
         self._process_yaml_batch(prompts, config, output_dir)
     
-    def _process_csv_batch(self, csv_data: List[Dict], config: Dict, output_dir: str) -> None:
-        """Process a batch of CSV data with individual settings"""
+    def _process_file_batch(self, file_data: List[Dict], config: Dict, output_dir: str) -> None:
+        """Process a batch of file data with individual settings"""
         # 사용자 지정 출력 디렉토리가 있으면 그것을 사용, 없으면 기본 구조 사용
         if output_dir != "./outputs":
             self.output_base = Path(output_dir) / self.model_name / self.current_date
@@ -310,13 +320,13 @@ class TrellisInferenceManager:
         
         formats = output_config.get('formats', ['glb'])
         
-        for i, item in enumerate(csv_data, 1):
+        for i, item in enumerate(file_data, 1):
             prompt = item['prompt']
             predefined_name = item['object_name']
             seed = item['seed']
             llm_model = item.get('llm_model')
             
-            logging.info(f"\n🎯 [{i}/{len(csv_data)}] Processing: '{prompt}'")
+            logging.info(f"\n🎯 [{i}/{len(file_data)}] Processing: '{prompt}'")
             if predefined_name:
                 logging.info(f"📋 Object name: {predefined_name}")
             if llm_model:
@@ -672,8 +682,9 @@ Examples:
   # Use specific model with custom base path
   python trellis_inference.py --model_path TRELLIS-text-large --config default.yaml --base_output /custom/path
   
-  # Process CSV input with custom output
+  # Process CSV/Excel input with custom output
   python trellis_inference.py --csv prompts.csv --output /mnt/nas/tmp/nayeon --base_output /mnt/nas/tmp/nayeon
+  python trellis_inference.py --csv prompts.xlsx --output /mnt/nas/tmp/nayeon --base_output /mnt/nas/tmp/nayeon
         """
     )
     parser.add_argument(
@@ -692,7 +703,7 @@ Examples:
     parser.add_argument(
         '--csv', 
         type=str, 
-        help='CSV file path with prompts'
+        help='CSV or Excel file path with prompts (.csv, .xlsx, .xls)'
     )
     
     parser.add_argument(
@@ -749,7 +760,7 @@ Examples:
                 'output': {'formats': ['glb', 'ply', 'mp4', 'jpg']},
                 'postprocessing': {'simplify': 0.95, 'texture_size': 1024}
             }
-            manager.process_batch_from_csv(args.csv, config, args.output)
+            manager.process_batch_from_file(args.csv, config, args.output)
         elif args.config:
             manager.process_batch_from_yaml(args.config, args.output)
         
