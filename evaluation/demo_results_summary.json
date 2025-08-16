@@ -1,0 +1,18 @@
+{
+  "mean_clip_score": 0.2052001953125,
+  "mean_clip_score_scaled": 20.52001953125,
+  "total_assets": 3,
+  "successful_evaluations": 3,
+  "success_rate": 1.0,
+  "results_excel_path": "/mnt/nas/tmp/nayeon/sampled_data_100_random_results_part01.xlsx",
+  "output_base_path": "/mnt/nas/tmp/nayeon/outputs/TRELLIS-text-large/20250816",
+  "model_summaries": {
+    "gemma3": {
+      "total_assets": 3,
+      "successful_evaluations": 3,
+      "success_rate": 1.0,
+      "mean_clip_score": 0.2052001953125,
+      "mean_clip_score_scaled": 20.52001953125
+    }
+  }
+}

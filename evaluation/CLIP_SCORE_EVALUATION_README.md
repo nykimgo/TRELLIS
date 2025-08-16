@@ -1,28 +1,36 @@
 # CLIP Score Evaluation for TRELLIS
 
-This implementation provides CLIP Score evaluation for TRELLIS 3D generation results using the Toys4k dataset.
+This implementation provides CLIP Score evaluation for both original Toys4k dataset and TRELLIS-generated 3D assets.
 
 ## Overview
 
-The CLIP Score evaluator measures the semantic alignment between generated 3D assets and their text descriptions by:
+The CLIP Score evaluator measures the semantic alignment between 3D assets and their text descriptions by:
 
 1. **3D Asset Rendering**: Renders each 3D asset from 8 viewpoints (45° intervals, pitch=30°, radius=2, FoV=40°)
 2. **Feature Extraction**: Uses CLIP to extract features from rendered images and text captions
 3. **Similarity Calculation**: Computes cosine similarity between image and text features
 4. **Score Aggregation**: Averages across 8 views per asset, then across all assets
 
-## Files Created
+## Evaluators Available
 
-- `toys4k_clip_evaluator.py` - Main evaluator for Toys4k dataset
+### 1. Toys4k Dataset Evaluator
+- `toys4k_clip_evaluator.py` - Evaluates original Toys4k dataset assets
 - `clip_score_evaluator.py` - General-purpose CLIP evaluator
+
+### 2. TRELLIS Generated Assets Evaluator  
+- `trellis_generated_clip_evaluator.py` - **NEW** Evaluates TRELLIS-generated 3D assets
+- `example_trellis_generated_evaluation.py` - Usage examples for generated assets
+- `test_trellis_generated_evaluator.py` - Test suite for generated assets evaluator
+
+### 3. Supporting Files
 - `requirements_clip_eval.txt` - Required dependencies
-- `test_basic_functionality.py` - Basic functionality tests
-- `example_clip_evaluation.py` - Usage examples
+- `test_basic_functionality.py` - Basic functionality tests (original)
+- `example_clip_evaluation.py` - Usage examples (original)
 
-## Dataset Structure
+## Dataset Structures
 
-The evaluator works with the Toys4k dataset at `/mnt/nas/Benchmark_Datatset/Toys4k/`:
-
+### 1. Original Toys4k Dataset
+Located at `/mnt/nas/Benchmark_Datatset/Toys4k/`:
 ```
 Toys4k/
 ├── metadata.csv                    # Asset metadata with captions
@@ -33,6 +41,23 @@ Toys4k/
 └── toys4k_blend_files/            # 3D assets in Blender format
 ```
 
+### 2. TRELLIS Generated Assets
+Located at `/mnt/nas/tmp/nayeon/`:
+```
+/mnt/nas/tmp/nayeon/
+├── sampled_data_100_random.csv                    # 100 sampled objects metadata
+├── sampled_data_100_random_results_part01.xlsx   # LLM-augmented prompts
+├── sampled_data_100_random_results_part02.xlsx   # (and other parts...)
+└── outputs/TRELLIS-text-large/20250816/         # Generated 3D assets
+    ├── gemma3_1b/
+    │   ├── Giraffe/
+    │   │   ├── Giraffe_TRELLIS-text-large_gemma3_1b_998646.glb
+    │   │   └── Giraffe_TRELLIS-text-large_gemma3_1b_998646.ply
+    │   └── Pig/...
+    ├── qwen3_0.6b/...
+    └── deepseek-r1_1.5b/...
+```
+
 ## Installation
 
 ```bash
@@ -41,27 +66,60 @@ pip install -r requirements_clip_eval.txt
 
 ## Usage
 
-### Quick Test (5 assets)
+### A. Original Toys4k Dataset Evaluation
+
+#### Quick Test (5 assets)
 ```bash
 python toys4k_clip_evaluator.py --max_assets 5 --output_path test_results.csv
 ```
 
-### Full Evaluation
+#### Full Evaluation
 ```bash
 python toys4k_clip_evaluator.py --output_path full_toys4k_clip_scores.csv
 ```
 
-### Custom CLIP Model
+#### Custom CLIP Model
 ```bash
 python toys4k_clip_evaluator.py --clip_model openai/clip-vit-large-patch14 --output_path results.csv
 ```
 
+### B. TRELLIS Generated Assets Evaluation
+
+#### Quick Test (5 generated assets)
+```bash
+python trellis_generated_clip_evaluator.py --max_assets 5 --save_path test_generated_results.csv
+```
+
+#### Evaluate Specific LLM Models
+```bash
+python trellis_generated_clip_evaluator.py --llm_models gemma3 qwen3 --save_path specific_models_results.csv
+```
+
+#### Full Evaluation of Generated Assets
+```bash
+python trellis_generated_clip_evaluator.py --save_path full_generated_results.csv
+```
+
+#### Run Example Evaluation
+```bash
+python example_trellis_generated_evaluation.py
+```
+
 ## Command Line Arguments
 
+### A. Original Toys4k Evaluator (`toys4k_clip_evaluator.py`)
 - `--dataset_path`: Path to Toys4k dataset (default: `/mnt/nas/Benchmark_Datatset/Toys4k`)
 - `--output_path`: Output CSV file path (default: `toys4k_clip_scores.csv`)
 - `--clip_model`: CLIP model name (default: `openai/clip-vit-base-patch32`)
 - `--max_assets`: Maximum assets to evaluate (for testing)
+
+### B. TRELLIS Generated Evaluator (`trellis_generated_clip_evaluator.py`)
+- `--results_excel`: Path to Excel file with LLM results (default: `/mnt/nas/tmp/nayeon/sampled_data_100_random_results_part01.xlsx`)
+- `--output_base_path`: Base path to generated outputs (default: `/mnt/nas/tmp/nayeon/outputs/TRELLIS-text-large/20250816`)
+- `--save_path`: Path to save results CSV file (default: `trellis_generated_clip_scores.csv`)
+- `--clip_model`: CLIP model name (default: `openai/clip-vit-base-patch32`)
+- `--max_assets`: Maximum assets to evaluate (for testing)
+- `--llm_models`: List of LLM models to evaluate (e.g., `--llm_models gemma3 qwen3`)
 
 ## Output Files
 
