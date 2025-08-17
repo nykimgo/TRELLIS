@@ -2,9 +2,9 @@
   "total_assets": 5,
   "successful_evaluations": 5,
   "failed_evaluations": 0,
-  "mean_fd_dinov2": 186.62468032836915,
-  "std_fd_dinov2": 73.42224694197668,
-  "median_fd_dinov2": 192.6066131591797,
-  "min_fd_dinov2": 122.61176300048828,
-  "max_fd_dinov2": 302.2014961242676
+  "mean_fd_dinov2": 186.31827850341796,
+  "std_fd_dinov2": 73.45850060749251,
+  "median_fd_dinov2": 192.4101104736328,
+  "min_fd_dinov2": 121.87538146972656,
+  "max_fd_dinov2": 301.83349609375
 }

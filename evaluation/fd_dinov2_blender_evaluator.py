@@ -193,7 +193,7 @@ class FD_dinov2_BlenderEvaluator:
             
             # Save rendered images if requested
             if save_dir:
-                save_asset_dir = os.path.join(save_dir, asset_name)
+                save_asset_dir = save_dir
                 os.makedirs(save_asset_dir, exist_ok=True)
                 
                 # Copy rendered images
@@ -222,12 +222,11 @@ class FD_dinov2_BlenderEvaluator:
             
             # Save features if requested
             if save_dir:
-                save_asset_dir = os.path.join(save_dir, asset_name)
-                np.save(os.path.join(save_asset_dir, 'gen_features.npy'), gen_features.cpu().numpy())
-                np.save(os.path.join(save_asset_dir, 'gt_features.npy'), gt_features.cpu().numpy())
+                np.save(os.path.join(save_dir, 'gen_features.npy'), gen_features.cpu().numpy())
+                np.save(os.path.join(save_dir, 'gt_features.npy'), gt_features.cpu().numpy())
                 
                 # Save feature statistics
-                with open(os.path.join(save_asset_dir, 'feature_stats.txt'), 'w') as f:
+                with open(os.path.join(save_dir, 'feature_stats.txt'), 'w') as f:
                     f.write(f"Generated features shape: {gen_features.shape}\n")
                     f.write(f"Ground truth features shape: {gt_features.shape}\n")
                     f.write(f"FD_dinov2 score: {fd_score}\n")
@@ -286,6 +285,7 @@ class FD_dinov2_BlenderEvaluator:
             # Get LLM model and object name from results
             llm_model = row['llm_model']
             object_name_clean = row['object_name_clean']
+            sha256 = row['sha256']
             
             # Convert LLM model name (: -> _)
             llm_model_folder = llm_model.replace(':', '_')
@@ -338,7 +338,13 @@ class FD_dinov2_BlenderEvaluator:
             
             # Evaluate this asset
             try:
-                result = self.evaluate_single_asset(gen_path, gt_path, save_dir, asset_name)
+                # Create folder name with model info and sha256
+                folder_name = f"{object_name_clean}_{sha256[:6]}"
+                model_save_dir = None
+                if save_dir:
+                    model_save_dir = os.path.join(save_dir, "TRELLIS-text-large", llm_model_folder, folder_name)
+                
+                result = self.evaluate_single_asset(gen_path, gt_path, model_save_dir, asset_name)
                 results.append(result)
             except Exception as e:
                 print(f"Error evaluating {asset_name}: {str(e)}")
