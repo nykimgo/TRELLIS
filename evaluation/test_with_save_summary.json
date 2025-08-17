@@ -1,0 +1,10 @@
+{
+  "total_assets": 2,
+  "successful_evaluations": 0,
+  "failed_evaluations": 2,
+  "mean_fd_dinov2": Infinity,
+  "std_fd_dinov2": Infinity,
+  "median_fd_dinov2": Infinity,
+  "min_fd_dinov2": Infinity,
+  "max_fd_dinov2": Infinity
+}

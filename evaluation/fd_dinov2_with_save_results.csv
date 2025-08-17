@@ -1,0 +1,6 @@
+sha256,file_identifier,object_name,llm_model,real_features_extracted,fake_features_extracted,fd_dinov2,success,error,save_dir
+b7585823e89d357628d343c33b2a769550ce0a9087c43d62d2a10e07298cb11c,giraffe/giraffe_006/giraffe_006.blend,Giraffe,gemma3,True,True,209.3046373867586,True,,/mnt/nas/tmp/nayeon/eval_FD
+b7585823e89d357628d343c33b2a769550ce0a9087c43d62d2a10e07298cb11c,giraffe/giraffe_006/giraffe_006.blend,Giraffe,gemma3,True,True,209.3046373867586,True,,/mnt/nas/tmp/nayeon/eval_FD
+b7585823e89d357628d343c33b2a769550ce0a9087c43d62d2a10e07298cb11c,giraffe/giraffe_006/giraffe_006.blend,Giraffe,qwen3,True,True,223.02732335692127,True,,/mnt/nas/tmp/nayeon/eval_FD
+b7585823e89d357628d343c33b2a769550ce0a9087c43d62d2a10e07298cb11c,giraffe/giraffe_006/giraffe_006.blend,Giraffe,qwen3,True,True,223.02732335692127,True,,/mnt/nas/tmp/nayeon/eval_FD
+b7585823e89d357628d343c33b2a769550ce0a9087c43d62d2a10e07298cb11c,giraffe/giraffe_006/giraffe_006.blend,Giraffe,gemma3,True,True,209.3046373867586,True,,/mnt/nas/tmp/nayeon/eval_FD

@@ -1,0 +1,27 @@
+{
+  "mean_fd_dinov2": 214.79371177482363,
+  "total_pairs": 5,
+  "successful_evaluations": 5,
+  "success_rate": 1.0,
+  "sampled_csv_path": "/mnt/nas/tmp/nayeon/sampled_data_100_random.csv",
+  "results_excel_path": "/mnt/nas/tmp/nayeon/sampled_data_100_random_results_part01.xlsx",
+  "dataset_path": "/mnt/nas/Benchmark_Datatset/Toys4k",
+  "output_base_path": "/mnt/nas/tmp/nayeon/outputs/TRELLIS-text-large/20250816",
+  "save_dir": "/mnt/nas/tmp/nayeon/eval_FD",
+  "save_renders": true,
+  "save_features": true,
+  "model_summaries": {
+    "gemma3": {
+      "total_assets": 3,
+      "successful_evaluations": 3,
+      "success_rate": 1.0,
+      "mean_fd_dinov2": 209.3046373867586
+    },
+    "qwen3": {
+      "total_assets": 2,
+      "successful_evaluations": 2,
+      "success_rate": 1.0,
+      "mean_fd_dinov2": 223.02732335692127
+    }
+  }
+}
