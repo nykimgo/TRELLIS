@@ -16,6 +16,10 @@ outputs
 *.mp4
 *.pt
 *.txt
+*.png
+*.csv
+*.xlsx
+*.json
 events.out*
 api_config.json
 prompt_generation_outputs
