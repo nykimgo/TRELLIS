@@ -266,6 +266,7 @@ class TrellisInferenceManager:
             object_name_column = 'object_name' if 'object_name' in df.columns else None
             seed_column = 'seed' if 'seed' in df.columns else None
             models_column = 'llm_model' if 'llm_model' in df.columns else None
+            file_identifier_column = 'file_identifier' if 'file_identifier' in df.columns else None
             
             # 파일 데이터를 딕셔너리 리스트로 변환
             file_data = []
@@ -280,7 +281,8 @@ class TrellisInferenceManager:
                             else int(row[seed_column]) if seed_column and pd.notna(row[seed_column])
                             else config.get('generation', {}).get('seed', "random")
                         ),
-                        'llm_model': row[models_column] if models_column and pd.notna(row[models_column]) else None
+                        'llm_model': row[models_column] if models_column and pd.notna(row[models_column]) else None,
+                        'file_identifier': row[file_identifier_column] if file_identifier_column and pd.notna(row[file_identifier_column]) else None
                     }
                     file_data.append(item)
             
