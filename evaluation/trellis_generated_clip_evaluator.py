@@ -134,7 +134,7 @@ class TrellisGeneratedCLIPEvaluator:
         
         return df
     
-    def find_generated_assets(self, output_base_path: str, llm_model: str, object_name: str) -> List[str]:
+    def find_generated_assets(self, output_base_path: str, llm_model: str, file_identifier: str) -> List[str]:
         """
         Find generated 3D assets (.glb/.ply) for a specific LLM model and object.
         
@@ -146,19 +146,9 @@ class TrellisGeneratedCLIPEvaluator:
         Returns:
             List of asset file paths
         """
-        # Convert llm_model category to directory name
-        model_dir_map = {
-            'gemma3': 'gemma3_1b',
-            'qwen3': 'qwen3_0.6b',
-            'deepseek': 'deepseek-r1_1.5b',
-            'gpt': 'gpt-oss_20b',
-            'llama': 'llama3.1_8b'
-        }
-        
-        model_dir = model_dir_map.get(llm_model, llm_model)
-        
+        object_name = file_identifier.split('/')[1]
         # Replace ':' with '_' for filesystem path compatibility
-        model_dir = model_dir.replace(':', '_')
+        model_dir = llm_model.replace(':', '_')
         
         asset_dir = os.path.join(output_base_path, model_dir, object_name)
         
@@ -167,9 +157,9 @@ class TrellisGeneratedCLIPEvaluator:
         
         # Find .glb and .ply files
         glb_files = glob.glob(os.path.join(asset_dir, "*.glb"))
-        ply_files = glob.glob(os.path.join(asset_dir, "*.ply"))
-        
-        return glb_files + ply_files
+        # ply_files = glob.glob(os.path.join(asset_dir, "*.ply"))
+
+        return glb_files
     
     def load_3d_asset(self, asset_path: str) -> Optional[trimesh.Trimesh]:
         """
@@ -399,11 +389,11 @@ class TrellisGeneratedCLIPEvaluator:
         try:
             # Find generated asset files
             asset_files = self.find_generated_assets(
-                output_base_path, row['llm_model'], row['object_name_clean']
+                output_base_path, row['llm_model'], row['file_identifier']
             )
             
             if not asset_files:
-                result['error'] = f"No generated assets found for {row['llm_model']}/{row['object_name_clean']}"
+                result['error'] = f"No generated assets found for {row['llm_model']}/{row['file_identifier']}"
                 return result
             
             # Use the first found asset file
