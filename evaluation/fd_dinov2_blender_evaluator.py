@@ -25,6 +25,8 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 class FD_dinov2_BlenderEvaluator:
+    RENDER_ANGLES = [0, 90, 180, 270]  # 각도 순서 정의
+    
     def __init__(self, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
         self.device = device
         self.setup_dinov2_model()
@@ -101,12 +103,18 @@ class FD_dinov2_BlenderEvaluator:
             print(f"Blender rendering timed out for {model_path}")
             return []
             
-        # Collect rendered images
+        # Collect rendered images using angle-based naming
         rendered_images = []
-        for i in range(4):
-            img_path = os.path.join(output_dir, f'{i:03d}.png')
+        for i, angle in enumerate(self.RENDER_ANGLES):
+            img_path = os.path.join(output_dir, f'{i:03d}.png')  # Blender outputs as 000.png, 001.png etc
+            angle_path = os.path.join(output_dir, f'{angle}.png')  # Our angle-based naming
+            
             if os.path.exists(img_path):
-                rendered_images.append(img_path)
+                # Rename to angle-based naming
+                os.rename(img_path, angle_path)
+                rendered_images.append(angle_path)
+            elif os.path.exists(angle_path):
+                rendered_images.append(angle_path)
                 
         return rendered_images
         
@@ -174,14 +182,22 @@ class FD_dinov2_BlenderEvaluator:
         # Check if cache exists
         cache_features_path = os.path.join(cache_asset_dir, 'gt_features.npy')
         cache_images = []
-        for i in range(4):
-            img_path = os.path.join(cache_asset_dir, f'gt_view_{i}.png')
+        for angle in self.RENDER_ANGLES:
+            img_path = os.path.join(cache_asset_dir, f'gt_view_{angle}.png')
             cache_images.append(img_path)
             
-        # If all cached files exist, load them
+        # If both features and images exist, load them
         if os.path.exists(cache_features_path) and all(os.path.exists(img) for img in cache_images):
-            print(f"Loading cached GT views for {base_asset_name}")
+            print(f"Loading cached GT views and features for {base_asset_name}")
             gt_features = torch.from_numpy(np.load(cache_features_path)).to(self.device)
+            return cache_images, gt_features
+        
+        # If only images exist, load them and extract features
+        elif all(os.path.exists(img) for img in cache_images):
+            print(f"Loading cached GT images and extracting features for {base_asset_name}")
+            gt_features = self.extract_dinov2_features(cache_images)
+            # Save the extracted features
+            np.save(cache_features_path, gt_features.cpu().numpy())
             return cache_images, gt_features
         
         # Otherwise, render and cache
@@ -199,14 +215,68 @@ class FD_dinov2_BlenderEvaluator:
             # Extract features
             gt_features = self.extract_dinov2_features(gt_images)
             
-            # Save to cache
+            # Save to cache using angle-based naming
             for i, gt_img in enumerate(gt_images):
-                cache_img_path = os.path.join(cache_asset_dir, f'gt_view_{i}.png')
+                angle = self.RENDER_ANGLES[i]
+                cache_img_path = os.path.join(cache_asset_dir, f'gt_view_{angle}.png')
                 os.system(f'cp {gt_img} {cache_img_path}')
+                # Update cache_images list to match saved names
+                cache_images[i] = cache_img_path
                 
             np.save(cache_features_path, gt_features.cpu().numpy())
             
             return cache_images, gt_features
+    
+    def get_or_create_gen_cache(self, gen_path: str, gen_cache_dir: str, asset_name: str) -> Tuple[List[str], torch.Tensor]:
+        """
+        Get cached generated views and features, or create them if they don't exist
+        Returns: (gen_image_paths, gen_features)
+        """
+        # Create cache directory structure
+        cache_asset_dir = os.path.join(gen_cache_dir, asset_name)
+        
+        # Check if cache exists
+        cache_features_path = os.path.join(cache_asset_dir, 'gen_features.npy')
+        cache_images = []
+        for angle in self.RENDER_ANGLES:
+            img_path = os.path.join(cache_asset_dir, f'gen_view_{angle}.png')
+            cache_images.append(img_path)
+            
+        # If both features and images exist, load them
+        if os.path.exists(cache_features_path) and all(os.path.exists(img) for img in cache_images):
+            print(f"Loading cached generated views and features for {asset_name}")
+            gen_features = torch.from_numpy(np.load(cache_features_path)).to(self.device)
+            return cache_images, gen_features
+        
+        # If only images exist, load them and extract features
+        elif all(os.path.exists(img) for img in cache_images):
+            print(f"Loading cached generated images and extracting features for {asset_name}")
+            gen_features = self.extract_dinov2_features(cache_images)
+            # Save the extracted features
+            os.makedirs(cache_asset_dir, exist_ok=True)
+            np.save(cache_features_path, gen_features.cpu().numpy())
+            return cache_images, gen_features
+        
+        # Otherwise, render and cache
+        print(f"Rendering and caching generated views for {asset_name}")
+        os.makedirs(cache_asset_dir, exist_ok=True)
+        
+        # Render generated views
+        gen_images = self.render_4_views_blender(gen_path, cache_asset_dir)
+        
+        if len(gen_images) == 0:
+            return [], torch.empty(0, 1024).to(self.device)
+        
+        # Extract features
+        gen_features = self.extract_dinov2_features(gen_images)
+        
+        # Update cache_images to match rendered file paths (they should already be angle-based)
+        cache_images = gen_images
+        
+        # Save features
+        np.save(cache_features_path, gen_features.cpu().numpy())
+        
+        return cache_images, gen_features
     
     def evaluate_single_asset(self, gen_path: str, gt_path: str, save_dir: Optional[str] = None, asset_name: str = None, 
                              gt_cache_dir: str = None, base_asset_name: str = None, sha256: str = None) -> Dict:
@@ -216,11 +286,10 @@ class FD_dinov2_BlenderEvaluator:
         
         # Create temporary directory for generated asset rendering
         with tempfile.TemporaryDirectory() as temp_dir:
-            gen_render_dir = os.path.join(temp_dir, 'gen_renders')
+            gen_cache_dir = os.path.join(temp_dir, 'gen_cache')
             
-            # Render generated asset
-            print(f"Rendering generated asset: {asset_name}")
-            gen_images = self.render_4_views_blender(gen_path, gen_render_dir)
+            # Get or create cached generated views and features
+            gen_images, gen_features = self.get_or_create_gen_cache(gen_path, gen_cache_dir, asset_name)
             
             # Get or create cached GT views and features
             if gt_cache_dir and base_asset_name and sha256:
@@ -247,18 +316,15 @@ class FD_dinov2_BlenderEvaluator:
                 save_asset_dir = save_dir
                 os.makedirs(save_asset_dir, exist_ok=True)
                 
-                # Copy rendered images
+                # Copy rendered images with angle-based naming
                 for i, (gen_img, gt_img) in enumerate(zip(gen_images, gt_images)):
-                    gen_save_path = os.path.join(save_asset_dir, f'gen_view_{i}.png')
-                    gt_save_path = os.path.join(save_asset_dir, f'gt_view_{i}.png')
+                    angle = self.RENDER_ANGLES[i]
+                    gen_save_path = os.path.join(save_asset_dir, f'gen_view_{angle}.png')
+                    gt_save_path = os.path.join(save_asset_dir, f'gt_view_{angle}.png')
                     os.system(f'cp {gen_img} {gen_save_path}')
                     os.system(f'cp {gt_img} {gt_save_path}')
             
-            # Extract features for generated images only (GT features already extracted if cached)
-            print(f"Extracting DINOv2 features for {asset_name}")
-            gen_features = self.extract_dinov2_features(gen_images)
-            
-            # GT features already extracted in cache or fallback above
+            # Features already extracted in get_or_create_gen_cache and get_or_create_gt_cache
             
             if gen_features.size(0) == 0 or gt_features.size(0) == 0:
                 return {

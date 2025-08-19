@@ -23,6 +23,9 @@ import tempfile
 import shutil
 from subprocess import DEVNULL, call
 
+# Get TRELLIS project root directory (parent of evaluation directory)
+TRELLIS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # CLIP imports
 from transformers import CLIPProcessor, CLIPModel
 
@@ -191,13 +194,37 @@ class TrellisGeneratedCLIPEvaluator:
             print(f"Error loading asset {asset_path}: {e}")
             return None
     
-    def render_asset_multiview(self, asset_path: str, save_dir: str = None) -> List[np.ndarray]:
+    def _check_existing_images(self, save_dir: str) -> Tuple[bool, List[str]]:
+        """
+        Check if all 8 rendered images already exist in the save directory.
+        
+        Args:
+            save_dir: Directory to check for existing images
+            
+        Returns:
+            Tuple of (all_exist, existing_image_paths)
+        """
+        if not save_dir or not os.path.exists(save_dir):
+            return False, []
+        
+        existing_paths = []
+        for yaw in self.yaw_angles:
+            img_path = os.path.join(save_dir, f'gen_view_{yaw}.png')
+            if os.path.exists(img_path):
+                existing_paths.append(img_path)
+            else:
+                return False, []
+        
+        return len(existing_paths) == 8, existing_paths
+    
+    def render_asset_multiview(self, asset_path: str, save_dir: str = None, skip_if_exists: bool = True) -> List[np.ndarray]:
         """
         Render a 3D asset from 8 different viewpoints using Blender.
         
         Args:
             asset_path: Path to the 3D asset file
             save_dir: Optional directory to save rendered images
+            skip_if_exists: If True, skip rendering if 8 images already exist in save_dir
             
         Returns:
             List of rendered images as numpy arrays
@@ -205,6 +232,18 @@ class TrellisGeneratedCLIPEvaluator:
         rendered_images = []
         
         try:
+            # Check if we should skip rendering due to existing images
+            if skip_if_exists and save_dir:
+                all_exist, existing_paths = self._check_existing_images(save_dir)
+                if all_exist:
+                    # print(f"Found existing 8 rendered images in {save_dir}, skipping rendering")
+                    # Load existing images
+                    for img_path in existing_paths:
+                        img = Image.open(img_path).convert('RGB')
+                        img_array = np.array(img)
+                        rendered_images.append(img_array)
+                    return rendered_images
+            
             # Use save_dir if provided, otherwise create temporary directory
             if save_dir:
                 os.makedirs(save_dir, exist_ok=True)
@@ -230,7 +269,7 @@ class TrellisGeneratedCLIPEvaluator:
             # Blender rendering arguments
             args = [
                 BLENDER_PATH, '-b', '-P', 
-                os.path.join('/home/sr/TRELLIS/dataset_toolkits/blender_script', 'render.py'),
+                os.path.join(TRELLIS_ROOT, 'dataset_toolkits', 'blender_script', 'render.py'),
                 '--',
                 '--views', json.dumps(views),
                 '--object', asset_path,
@@ -360,13 +399,15 @@ class TrellisGeneratedCLIPEvaluator:
         
         return avg_similarity
     
-    def evaluate_single_generated_asset(self, output_base_path: str, row: pd.Series, save_base_path: str = None) -> Dict:
+    def evaluate_single_generated_asset(self, output_base_path: str, row: pd.Series, save_base_path: str = None, skip_if_exists: bool = True) -> Dict:
         """
         Evaluate CLIP score for a single TRELLIS-generated 3D asset.
         
         Args:
             output_base_path: Base path to generated outputs
             row: LLM results row
+            save_base_path: Base directory path to save results and rendered images
+            skip_if_exists: Skip rendering if 8 images already exist
             
         Returns:
             Dictionary with evaluation results
@@ -379,7 +420,8 @@ class TrellisGeneratedCLIPEvaluator:
             'object_name_clean': row['object_name_clean'],
             'user_prompt': row['user_prompt'],
             'text_prompt': row['text_prompt'],
-            'clip_score': 0.0,
+            'aug_clip_score': 0.0,
+            'merged_clip_score': 0.0,
             'num_views_rendered': 0,
             'success': False,
             'asset_path': '',
@@ -401,10 +443,16 @@ class TrellisGeneratedCLIPEvaluator:
             result['asset_path'] = asset_path
             
             # Use the LLM-augmented text prompt
-            text_prompt = row['text_prompt']
-            if pd.isna(text_prompt) or not text_prompt.strip():
+            aug_text_prompt = row['text_prompt']
+            if pd.isna(aug_text_prompt) or not aug_text_prompt.strip():
                 result['error'] = 'No text_prompt available'
                 return result
+            user_prompt = row['user_prompt']
+            if pd.isna(aug_text_prompt) or not aug_text_prompt.strip():
+                result['error'] = 'No user_prompt available'
+                return result
+            merged_text_prompt = '"' + user_prompt[:-1] + aug_text_prompt[1:]
+            # print(merged_text_prompt)
             
             # Prepare save directory for rendered images
             save_dir = None
@@ -425,7 +473,7 @@ class TrellisGeneratedCLIPEvaluator:
                 save_dir = os.path.join(save_base_path, 'CLIP_evaluation', 'TRELLIS-text-large', llm_model_clean, middle_part)
             
             # Render from multiple viewpoints using Blender
-            rendered_images = self.render_asset_multiview(asset_path, save_dir)
+            rendered_images = self.render_asset_multiview(asset_path, save_dir, skip_if_exists=skip_if_exists)
             if not rendered_images:
                 result['error'] = 'Rendering failed'
                 return result
@@ -434,19 +482,22 @@ class TrellisGeneratedCLIPEvaluator:
             
             # Extract features
             image_features = self.extract_image_features(rendered_images)
-            text_features = self.extract_text_features([text_prompt])
+            aug_text_features = self.extract_text_features([aug_text_prompt])
+            merged_text_features = self.extract_text_features([merged_text_prompt])
             
             # Calculate CLIP score
-            clip_score = self.calculate_clip_score(image_features, text_features)
+            aug_clip_score = self.calculate_clip_score(image_features, aug_text_features)
+            merged_clip_score = self.calculate_clip_score(image_features, merged_text_features)
             
-            result['clip_score'] = clip_score
+            result['aug_clip_score'] = aug_clip_score
+            result['merged_clip_score'] = merged_clip_score
             result['success'] = True
             
             # Save CLIP score to txt file in the same directory as rendered images
             if save_dir:
                 clip_score_path = os.path.join(save_dir, 'clip_score.txt')
                 with open(clip_score_path, 'w') as f:
-                    f.write(f"{clip_score:.6f}\n")
+                    f.write(f"aug_clip_score:{aug_clip_score:.6f}\nmerged_clip_score:{merged_clip_score:.6f}\n")
             
         except Exception as e:
             result['error'] = str(e)
@@ -458,7 +509,8 @@ class TrellisGeneratedCLIPEvaluator:
                                          output_base_path: str, 
                                          save_base_path: str = None,
                                          max_assets: int = None,
-                                         llm_models_filter: List[str] = None) -> Dict:
+                                         llm_models_filter: List[str] = None,
+                                         skip_if_exists: bool = True) -> Dict:
         """
         Evaluate CLIP scores for TRELLIS-generated 3D assets.
         
@@ -468,6 +520,7 @@ class TrellisGeneratedCLIPEvaluator:
             save_base_path: Base directory path to save results and rendered images
             max_assets: Maximum number of assets to evaluate (for testing)
             llm_models_filter: List of LLM models to evaluate (None for all)
+            skip_if_exists: Skip rendering if 8 images already exist
             
         Returns:
             Dictionary with aggregated results
@@ -487,63 +540,76 @@ class TrellisGeneratedCLIPEvaluator:
         # Evaluate each asset
         evaluation_results = []
         successful_evaluations = 0
-        total_clip_score = 0.0
+        total_aug_clip_score = 0.0
+        total_merged_clip_score = 0.0
         
         # Track results by LLM model
         model_results = {}
         
         for idx, row in tqdm(results_df.iterrows(), total=len(results_df), desc="Evaluating generated assets"):
-            result = self.evaluate_single_generated_asset(output_base_path, row, save_base_path)
+            result = self.evaluate_single_generated_asset(output_base_path, row, save_base_path, skip_if_exists)
             evaluation_results.append(result)
             
             llm_model = result['llm_model']
             if llm_model not in model_results:
-                model_results[llm_model] = {'total': 0, 'successful': 0, 'total_score': 0.0}
+                model_results[llm_model] = {'total': 0, 'successful': 0, 'total_aug_score': 0.0, 'total_merged_score': 0.0}
             
             model_results[llm_model]['total'] += 1
             
             if result['success']:
                 successful_evaluations += 1
-                total_clip_score += result['clip_score']
+                total_aug_clip_score += result['aug_clip_score']
+                total_merged_clip_score += result['merged_clip_score']
                 model_results[llm_model]['successful'] += 1
-                model_results[llm_model]['total_score'] += result['clip_score']
+                model_results[llm_model]['total_aug_score'] += result['aug_clip_score']
+                model_results[llm_model]['total_merged_score'] += result['merged_clip_score']
             
             # Print progress every 10 assets
             if (idx + 1) % 10 == 0:
                 current_success_rate = successful_evaluations / (idx + 1)
-                current_avg_score = total_clip_score / successful_evaluations if successful_evaluations > 0 else 0
+                current_avg_aug_score = total_aug_clip_score / successful_evaluations if successful_evaluations > 0 else 0
+                current_avg_merged_score = total_merged_clip_score / successful_evaluations if successful_evaluations > 0 else 0
                 print(f"Progress: {idx + 1}/{len(results_df)}, "
                       f"Success rate: {current_success_rate:.2%}, "
-                      f"Avg CLIP score: {current_avg_score:.4f}")
+                      f"Avg AUG CLIP score: {current_avg_aug_score:.4f}, "
+                      f"Avg MERGED CLIP score: {current_avg_merged_score:.4f}")
         
         # Calculate aggregated metrics
-        mean_clip_score = total_clip_score / successful_evaluations if successful_evaluations > 0 else 0.0
-        mean_clip_score_scaled = mean_clip_score * 100  # Scale by 100 as mentioned in instructions
+        mean_aug_clip_score = total_aug_clip_score / successful_evaluations if successful_evaluations > 0 else 0.0
+        mean_aug_clip_score_scaled = mean_aug_clip_score * 100  # Scale by 100 as mentioned in instructions
+        # Calculate aggregated metrics
+        mean_merged_clip_score = total_merged_clip_score / successful_evaluations if successful_evaluations > 0 else 0.0
+        mean_merged_clip_score_scaled = mean_merged_clip_score * 100  # Scale by 100 as mentioned in instructions
         
         # Calculate per-model metrics
         model_summaries = {}
         for model, stats in model_results.items():
             if stats['successful'] > 0:
-                model_avg_score = stats['total_score'] / stats['successful']
+                model_avg_aug_score = stats['total_aug_score'] / stats['successful']
+                model_avg_merged_score = stats['total_merged_score'] / stats['successful']
                 model_summaries[model] = {
                     'total_assets': stats['total'],
                     'successful_evaluations': stats['successful'],
                     'success_rate': stats['successful'] / stats['total'],
-                    'mean_clip_score': model_avg_score,
-                    'mean_clip_score_scaled': model_avg_score * 100
+                    'mean_aug_clip_score': model_avg_aug_score,
+                    'mean_aug_clip_score_scaled': model_avg_aug_score * 100,
+                    'mean_merged_clip_score': model_avg_merged_score,
+                    'mean_merged_clip_score_scaled': model_avg_merged_score * 100
                 }
             else:
                 model_summaries[model] = {
                     'total_assets': stats['total'],
                     'successful_evaluations': 0,
                     'success_rate': 0.0,
-                    'mean_clip_score': 0.0,
-                    'mean_clip_score_scaled': 0.0
+                    'mean_merged_clip_score': 0.0,
+                    'mean_merged_clip_score_scaled': 0.0
                 }
         
         aggregated_results = {
-            'mean_clip_score': mean_clip_score,
-            'mean_clip_score_scaled': mean_clip_score_scaled,
+            'mean_aug_clip_score': mean_aug_clip_score,
+            'mean_aug_clip_score_scaled': mean_aug_clip_score_scaled,
+            'mean_merged_clip_score': mean_merged_clip_score,
+            'mean_merged_clip_score_scaled': mean_merged_clip_score_scaled,
             'total_assets': len(results_df),
             'successful_evaluations': successful_evaluations,
             'success_rate': successful_evaluations / len(results_df) if len(results_df) > 0 else 0.0,
@@ -558,15 +624,15 @@ class TrellisGeneratedCLIPEvaluator:
         print(f"Total assets: {len(results_df)}")
         print(f"Successful evaluations: {successful_evaluations}")
         print(f"Success rate: {aggregated_results['success_rate']:.2%}")
-        print(f"Mean CLIP Score: {mean_clip_score:.4f}")
-        print(f"Mean CLIP Score (×100): {mean_clip_score_scaled:.2f}")
+        print(f"Mean CLIP Score: AUG {mean_aug_clip_score:.4f} / MERGED {mean_merged_clip_score:.4f}")
+        print(f"Mean CLIP Score (×100): AUG {mean_aug_clip_score_scaled:.2f} / MERGED {mean_merged_clip_score_scaled:.2f}")
         
         print(f"\n=== Per-Model Results ===")
         for model, summary in model_summaries.items():
             print(f"{model}: {summary['successful_evaluations']}/{summary['total_assets']} "
                   f"({summary['success_rate']:.1%}) - "
-                  f"CLIP Score: {summary['mean_clip_score']:.4f} "
-                  f"(×100: {summary['mean_clip_score_scaled']:.2f})")
+                  f"CLIP Score: AUG {summary['mean_aug_clip_score']:.4f} MERGED {summary['mean_merged_clip_score']:.4f}"
+                  f"(×100: AUG {summary['mean_aug_clip_score_scaled']:.2f} MERGED {summary['mean_merged_clip_score_scaled']:.2f})")
         
         # Save detailed results to CSV
         if save_base_path:
@@ -649,7 +715,21 @@ Examples:
                         default=None,
                         help='Specific LLM model categories to evaluate (e.g., gemma3 qwen3 deepseek)')
     
+    parser.add_argument('--skip_if_exists', 
+                        action='store_true', 
+                        default=True,
+                        help='Skip rendering if 8 images already exist in target directory (default: True)')
+    
+    parser.add_argument('--no_skip_if_exists', 
+                        action='store_true', 
+                        default=False,
+                        help='Force rendering even if images already exist')
+    
     args = parser.parse_args()
+    
+    # Handle skip_if_exists logic
+    if args.no_skip_if_exists:
+        args.skip_if_exists = False
     
     # Validate paths
     if not os.path.exists(args.results_excel):
@@ -678,6 +758,10 @@ Examples:
         print(f"🔍 Evaluating models: {', '.join(args.llm_models)}")
     if args.max_assets:
         print(f"⚡ Limited to {args.max_assets} assets for testing")
+    if args.skip_if_exists:
+        print(f"⏭️  Will skip rendering if 8 images already exist")
+    else:
+        print(f"🔄 Will force re-rendering even if images exist")
     print()
     
     # Initialize evaluator
@@ -686,10 +770,10 @@ Examples:
     # Run evaluation
     results = evaluator.evaluate_trellis_generated_dataset(
         args.results_excel, args.output_base_path, args.save_path, 
-        args.max_assets, args.llm_models
+        args.max_assets, args.llm_models, args.skip_if_exists
     )
     
-    print(f"\n🎯 Final CLIP Score (×100): {results['mean_clip_score_scaled']:.2f}")
+    print(f"\n🎯 Final CLIP Score (×100): {results['mean_merged_clip_score_scaled']:.2f}")
     if args.save_path:
         excel_name = os.path.splitext(os.path.basename(args.results_excel))[0]
         csv_filename = f"CLIP_evaluation_{excel_name}.csv"
