@@ -46,6 +46,21 @@ class FDDinoV2EvaluatorWithSave(FDDinoV2Evaluator):
         if save_renders or save_features:
             print(f"✓ Saving enabled - Renders: {save_renders}, Features: {save_features}")
     
+    def extract_middle_identifier(self, file_identifier: str) -> str:
+        """
+        Extract the middle part of file_identifier for directory naming.
+        
+        Args:
+            file_identifier: String like "giraffe/giraffe_006/giraffe_006.blend"
+            
+        Returns:
+            Middle part like "giraffe_006"
+        """
+        parts = file_identifier.split('/')
+        if len(parts) >= 2:
+            return parts[1]  # Return the middle part
+        return file_identifier  # Fallback to original if splitting fails
+    
     def save_rendered_images(self, images: List[np.ndarray], save_dir: str, prefix: str):
         """
         Save rendered images to disk.
@@ -65,7 +80,7 @@ class FDDinoV2EvaluatorWithSave(FDDinoV2Evaluator):
                 img = (img * 255).astype(np.uint8)
             
             img_pil = Image.fromarray(img)
-            filename = f"{prefix}_view_{i:02d}_yaw_{self.yaw_angles[i]:03d}.png"
+            filename = f"{prefix}_view_{self.yaw_angles[i]:03d}.png"
             img_path = os.path.join(save_dir, filename)
             img_pil.save(img_path)
         
@@ -173,7 +188,8 @@ class FDDinoV2EvaluatorWithSave(FDDinoV2Evaluator):
             
             # Save rendered images if enabled
             if save_dir and (self.save_renders or self.save_features):
-                asset_save_dir = os.path.join(save_dir, f"{llm_row['category']}_{llm_row['object_name_clean']}")
+                middle_identifier = self.extract_middle_identifier(sampled_row['file_identifier'])
+                asset_save_dir = os.path.join(save_dir, middle_identifier)
                 
                 if self.save_renders:
                     self.save_rendered_images(gt_images, asset_save_dir, "gt")
@@ -192,7 +208,8 @@ class FDDinoV2EvaluatorWithSave(FDDinoV2Evaluator):
             
             # Save extracted features if enabled
             if save_dir and self.save_features:
-                asset_save_dir = os.path.join(save_dir, f"{llm_row['category']}_{llm_row['object_name_clean']}")
+                middle_identifier = self.extract_middle_identifier(sampled_row['file_identifier'])
+                asset_save_dir = os.path.join(save_dir, middle_identifier)
                 self.save_extracted_features(gt_features, asset_save_dir, "gt")
                 self.save_extracted_features(gen_features, asset_save_dir, "gen")
             

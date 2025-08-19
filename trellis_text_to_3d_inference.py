@@ -322,7 +322,9 @@ class TrellisInferenceManager:
         
         for i, item in enumerate(file_data, 1):
             prompt = item['prompt']
-            predefined_name = item['object_name']
+            file_identifier = item['file_identifier'].split('/')
+            object_name = file_identifier[0]
+            predefined_name = file_identifier[1] if len(file_identifier) > 1 else None
             seed = item['seed']
             llm_model = item.get('llm_model')
             

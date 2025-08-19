@@ -15,8 +15,9 @@ import pandas as pd
 import textwrap
 
 # Base paths
-BASE_PATH = "/mnt/nas/tmp/nayeon/evaluation/fd_dinov2_blender_with_save_renders/TRELLIS-text-large"
-OUTPUT_PATH = "/mnt/nas/tmp/nayeon/evaluation/fd_dinov2_blender_with_save_renders/TRELLIS-text-large"
+BASE_PATH = "/mnt/nas/tmp/nayeon/output/CLIP_evaluation/TRELLIS-text-large"
+GT_BASE_PATH = "/mnt/nas/Benchmark_Datatset/Toys4k/render_multiviews_for_CLIPeval"
+OUTPUT_PATH = "/mnt/nas/tmp/nayeon/evaluation/fd_dinov2/TRELLIS-text-large"
 
 # Model configurations
 MODEL_CONFIGS = {
@@ -58,13 +59,13 @@ def get_target_objects_from_excel(df):
     target_objects = set()
     
     for _, row in df.iterrows():
-        # Clean object name by removing commas
-        obj_name = str(row['object_name_clean']).replace(',', '').strip()
-        # Get first 6 characters of sha256
-        sha_prefix = str(row['sha256'])[:6]
-        # Create target object identifier
-        target_obj = f"{obj_name}_{sha_prefix}"
-        target_objects.add(target_obj)
+        # Extract middle part from file_identifier (e.g., "giraffe/giraffe_006/giraffe_006.blend" -> "giraffe_006")
+        file_id = str(row['file_identifier'])
+        if '/' in file_id:
+            parts = file_id.split('/')
+            if len(parts) >= 2:
+                target_obj = parts[1]  # Get the middle part
+                target_objects.add(target_obj)
     
     # Convert to sorted list
     target_list = sorted(list(target_objects))
@@ -101,18 +102,17 @@ def get_prompt_info(df, llm_model, object_name):
     if df is None:
         return None, None
     
-    # Extract object name and identifier
-    obj_name = object_name.split('_')[0]
-    obj_id = object_name.split('_')[1]
+    # Extract object name and identifier from file_identifier (e.g., "giraffe_006")
+    obj_name = object_name.split('_')[0]  # "giraffe"
+    file_identifier = f'{obj_name}/{object_name}/{object_name}.blend'
     
     # Convert model name from directory format to Excel format
     excel_model_name = llm_model.replace('_', ':')
     
-    # Find matching row
+    # Find matching row by file_identifier middle part
     matches = df[
         (df['llm_model'] == excel_model_name) & 
-        (df['object_name_clean'] == obj_name) &
-        (df['sha256'].str.startswith(obj_id))
+        (df['file_identifier'] == file_identifier)
     ]
     
     if len(matches) > 0:
@@ -174,14 +174,14 @@ def create_comparison_grid_with_prompts(model_size, object_name, models, df):
     
     # Subtitle
     subtitle1 = MODEL_CONFIGS[model_size]["title"]
-    subtitle2 = f"Object: {object_name.split('_')[0]}"
+    subtitle2 = f"Object: {object_name}"
     
     # Create grid layout: (models + GT) x 5 (label + 4 views + prompt)
     rows = (len(models) + 1) * 2  # *2 for image and prompt rows
     cols = 5  # label + 4 views
     
     # Add GT row first
-    gt_path = os.path.join(BASE_PATH, models[0], object_name)
+    gt_path = os.path.join(GT_BASE_PATH, object_name)
     
     # Get user prompt for GT
     user_prompt, _ = get_prompt_info(df, models[0], object_name)
@@ -197,9 +197,9 @@ def create_comparison_grid_with_prompts(model_size, object_name, models, df):
     ax.axis('off')
     
     # GT images
-    for view_idx in range(4):
+    for col_idx, view_idx in enumerate([270, 315, 90, 135]):
         gt_img_path = os.path.join(gt_path, f"gt_view_{view_idx}.png")
-        ax = plt.subplot2grid((rows, cols), (row_idx, view_idx + 1), fig=fig)
+        ax = plt.subplot2grid((rows, cols), (row_idx, col_idx + 1), fig=fig)
         
         img = load_image_safe(gt_img_path)
         if img is not None:
@@ -267,9 +267,9 @@ def create_comparison_grid_with_prompts(model_size, object_name, models, df):
         ax.axis('off')
         
         # Model images
-        for view_idx in range(4):
+        for col_idx, view_idx in enumerate([270, 315, 90, 135]):
             gen_img_path = os.path.join(model_path, f"gen_view_{view_idx}.png")
-            ax = plt.subplot2grid((rows, cols), (img_row_idx, view_idx + 1), fig=fig)
+            ax = plt.subplot2grid((rows, cols), (img_row_idx, col_idx + 1), fig=fig)
             
             img = load_image_safe(gen_img_path)
             if img is not None:
@@ -303,6 +303,9 @@ def create_comparison_grid_with_prompts(model_size, object_name, models, df):
     output_filename = f"{model_size}_{object_name}_with_prompts.png"
     output_path = os.path.join(OUTPUT_PATH, output_filename)
     
+    # Create output directory if it doesn't exist
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
     
@@ -323,8 +326,8 @@ def create_cross_size_comparison_by_family(object_name, df, model_family):
                 if os.path.exists(model_path):
                     # Check if this model has prompts available
                     excel_model_name = model_name.replace('_', ':')
-                    obj_name = object_name.split('_')[0].replace(',', '').strip()
-                    obj_id = object_name.split('_')[1]
+                    obj_name = object_name.split('_')[0]  # "giraffe" from "giraffe_006"
+                    obj_id = object_name.split('_')[1]    # "006" from "giraffe_006"
                     
                     matches = df[
                         (df['llm_model'] == excel_model_name) & 
@@ -355,7 +358,7 @@ def create_cross_size_comparison_by_family(object_name, df, model_family):
     cols = 5
     
     # GT row
-    gt_path = os.path.join(BASE_PATH, list(family_models.values())[0], object_name)
+    gt_path = os.path.join(GT_BASE_PATH, object_name)
     user_prompt, _ = get_prompt_info(df, list(family_models.values())[0], object_name)
     
     # GT images
@@ -366,9 +369,9 @@ def create_cross_size_comparison_by_family(object_name, df, model_family):
     ax.set_ylim(0, 1)
     ax.axis('off')
     
-    for view_idx in range(4):
+    for col_idx, view_idx in enumerate([270, 315, 90, 135]):
         gt_img_path = os.path.join(gt_path, f"gt_view_{view_idx}.png")
-        ax = plt.subplot2grid((rows, cols), (row_idx, view_idx + 1), fig=fig)
+        ax = plt.subplot2grid((rows, cols), (row_idx, col_idx + 1), fig=fig)
         
         img = load_image_safe(gt_img_path)
         if img is not None:
@@ -415,9 +418,9 @@ def create_cross_size_comparison_by_family(object_name, df, model_family):
         ax.axis('off')
         
         # Model images
-        for view_idx in range(4):
+        for col_idx, view_idx in enumerate([270, 315, 90, 135]):
             gen_img_path = os.path.join(model_path, f"gen_view_{view_idx}.png")
-            ax = plt.subplot2grid((rows, cols), (img_row_idx, view_idx + 1), fig=fig)
+            ax = plt.subplot2grid((rows, cols), (img_row_idx, col_idx + 1), fig=fig)
             
             img = load_image_safe(gen_img_path)
             if img is not None:
@@ -449,6 +452,9 @@ def create_cross_size_comparison_by_family(object_name, df, model_family):
     # Save figure
     output_filename = f"cross_size_{object_name}_comparison_{model_family}.png"
     output_path = os.path.join(OUTPUT_PATH, output_filename)
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
@@ -514,13 +520,11 @@ def main():
                 all_prompts_found = True
                 for model_name in available_models:
                     excel_model_name = model_name.replace('_', ':')
-                    obj_name = object_name.split('_')[0].replace(',', '').strip()
-                    obj_id = object_name.split('_')[1]
-                    
+                    obj_name = object_name.split('_')[0]  # "giraffe" from "giraffe_006"
+                    file_identifier = f'{obj_name}/{object_name}/{object_name}.blend'
                     matches = df[
                         (df['llm_model'] == excel_model_name) & 
-                        (df['object_name_clean'] == obj_name) &
-                        (df['sha256'].str.startswith(obj_id))
+                        (df['file_identifier'] == file_identifier) 
                     ]
                     
                     if len(matches) == 0:
