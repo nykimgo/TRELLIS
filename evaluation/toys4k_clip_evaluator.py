@@ -14,14 +14,20 @@ from PIL import Image
 from tqdm import tqdm
 import argparse
 import ast
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import trimesh
+import tempfile
+import shutil
+import glob
+import subprocess
+from subprocess import DEVNULL, call
 
 # CLIP imports
 from transformers import CLIPProcessor, CLIPModel
+
+# Blender rendering setup
+BLENDER_LINK = 'https://download.blender.org/release/Blender3.0/blender-3.0.1-linux-x64.tar.xz'
+BLENDER_INSTALLATION_PATH = '/tmp'
+BLENDER_PATH = f'{BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64/blender'
 
 class Toys4kCLIPEvaluator:
     """
@@ -79,12 +85,27 @@ class Toys4kCLIPEvaluator:
         
         # Rendering parameters for 8 viewpoints
         self.yaw_angles = [0, 45, 90, 135, 180, 225, 270, 315]  # 8 viewpoints at 45° intervals
-        self.pitch_angle = 30  # Fixed pitch angle
+        self.pitch_angle = 30  # Fixed pitch angle in degrees
         self.radius = 2  # Fixed radius
         self.fov = 40  # Field of view in degrees
         self.resolution = 512  # Rendering resolution
         
+        # Install Blender if needed
+        self._install_blender()
+        
         print(f"Initialized CLIP Score evaluator with {len(self.yaw_angles)} viewpoints")
+    
+    def _install_blender(self):
+        """Install Blender if not already available."""
+        if not os.path.exists(BLENDER_PATH):
+            print("Installing Blender...")
+            os.system('sudo apt-get update')
+            os.system('sudo apt-get install -y libxrender1 libxi6 libxkbcommon-x11-0 libsm6')
+            os.system(f'wget {BLENDER_LINK} -P {BLENDER_INSTALLATION_PATH}')
+            os.system(f'tar -xvf {BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64.tar.xz -C {BLENDER_INSTALLATION_PATH}')
+            print("✓ Blender installed")
+        else:
+            print("✓ Blender already available")
     
     def load_toys4k_metadata(self, dataset_path: str) -> pd.DataFrame:
         """
@@ -114,9 +135,59 @@ class Toys4kCLIPEvaluator:
         df['parsed_captions'] = df['captions'].apply(parse_captions)
         return df
     
+    def load_excel_data(self, excel_path: str) -> pd.DataFrame:
+        """
+        Load data from Excel or CSV file containing object_name and sha256.
+        
+        Args:
+            excel_path: Path to Excel (.xlsx/.xls) or CSV file
+            
+        Returns:
+            DataFrame with data
+        """
+        if not os.path.exists(excel_path):
+            raise FileNotFoundError(f"Data file not found: {excel_path}")
+        
+        # Check file extension and read accordingly
+        if excel_path.endswith('.xlsx') or excel_path.endswith('.xls'):
+            df = pd.read_excel(excel_path)
+        else:
+            df = pd.read_csv(excel_path)
+            
+        print(f"Loaded {len(df)} entries from {excel_path}")
+        
+        # Check available columns
+        print(f"Available columns: {list(df.columns)}")
+        
+        # Try to find object_name column (might have different name)
+        object_name_col = None
+        for col in df.columns:
+            if 'object' in col.lower() and 'name' in col.lower():
+                object_name_col = col
+                break
+        
+        if object_name_col is None:
+            # If no object_name column, use file_identifier or create a default
+            if 'file_identifier' in df.columns:
+                df['object_name'] = df['file_identifier'].apply(lambda x: x.split('/')[-1] if isinstance(x, str) else 'unknown')
+                print("Created object_name from file_identifier")
+            else:
+                df['object_name'] = 'unknown'
+                print("No object_name found, using 'unknown' as default")
+        else:
+            df['object_name'] = df[object_name_col]
+            print(f"Using {object_name_col} as object_name")
+        
+        # Validate required columns
+        if 'sha256' not in df.columns:
+            raise ValueError(f"Missing required column 'sha256' in file: {excel_path}")
+        
+        return df
+    
     def find_asset_file(self, dataset_path: str, row: pd.Series) -> Optional[str]:
         """
-        Find the actual asset file (.obj or .blend) for a metadata row.
+        Find the actual asset file (.blend or .obj) for a metadata row.
+        Prioritize .blend files for color rendering.
         
         Args:
             dataset_path: Path to Toys4k dataset
@@ -125,7 +196,13 @@ class Toys4kCLIPEvaluator:
         Returns:
             Path to asset file or None
         """
-        # Try obj files first (easier to load with trimesh)
+        # Try blend files first (for color rendering)
+        if pd.notna(row.get('local_path', '')):
+            blend_file = row['local_path'].replace('/mnt/sdc_870evo_8TB/Toys4k/', f'{dataset_path}/')
+            if os.path.exists(blend_file):
+                return blend_file
+        
+        # Fallback: try obj files (but these will render in grayscale)
         obj_path = os.path.join(dataset_path, 'toys4k_obj_files')
         if 'file_identifier' in row:
             # Parse file_identifier to get category and asset name
@@ -136,12 +213,6 @@ class Toys4kCLIPEvaluator:
                 obj_file = os.path.join(obj_path, category, asset_name, 'mesh.obj')
                 if os.path.exists(obj_file):
                     return obj_file
-        
-        # Fallback: try blend files (but trimesh might not support them)
-        if pd.notna(row.get('local_path', '')):
-            blend_file = row['local_path'].replace('/mnt/sdc_870evo_8TB/Toys4k/', f'{dataset_path}/')
-            if os.path.exists(blend_file):
-                return blend_file
         
         return None
     
@@ -175,72 +246,83 @@ class Toys4kCLIPEvaluator:
             print(f"Error loading asset {asset_path}: {e}")
             return None
     
-    def render_asset_multiview(self, mesh: trimesh.Trimesh) -> List[np.ndarray]:
+    def render_asset_multiview(self, asset_path: str, ground_truth_dir: str, object_name: str, sha256: str) -> List[np.ndarray]:
         """
-        Render a 3D asset from 8 different viewpoints using matplotlib.
+        Render a 3D asset from 8 different viewpoints using Blender (copying fd_dinov2_blender_evaluator.py approach).
         
         Args:
-            mesh: 3D mesh to render
+            asset_path: Path to the 3D asset file
+            ground_truth_dir: Path to the Toys4k dataset directory
+            object_name: Object name (commas will be removed)
+            sha256: SHA256 hash of the asset
             
         Returns:
             List of rendered images as numpy arrays
         """
         rendered_images = []
         
-        # Normalize mesh to unit sphere
-        mesh_centered = mesh.copy()
-        mesh_centered.vertices -= mesh_centered.centroid
-        scale = 1.0 / mesh_centered.bounds.ptp().max() if mesh_centered.bounds.ptp().max() > 0 else 1.0
-        mesh_centered.vertices *= scale
-        
         try:
+            # Clean object name by removing commas
+            clean_object_name = object_name.replace(',', '') if object_name else 'unknown'
+            
+            # Use only first 6 characters of sha256
+            sha256_short = sha256[:6] if sha256 else 'unknown'
+            
+            # Create output directory
+            output_dir = os.path.join(ground_truth_dir, 'render_multiviews_for_CLIPeval', f'{clean_object_name}_{sha256_short}')
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Define 8 views: exactly like fd_dinov2_blender_evaluator.py but with 8 angles
+            views = []
             for yaw in self.yaw_angles:
-                # Create matplotlib figure
-                fig = plt.figure(figsize=(8, 8), dpi=64)
-                ax = fig.add_subplot(111, projection='3d')
+                views.append({
+                    'yaw': yaw * np.pi / 180, 
+                    'pitch': self.pitch_angle * np.pi / 180, 
+                    'radius': self.radius, 
+                    'fov': self.fov * np.pi / 180
+                })
+            
+            # Prepare Blender command (same as dataset_toolkits/render.py)
+            args = [
+                BLENDER_PATH, '-b', '-P', '/home/sr/TRELLIS/dataset_toolkits/blender_script/render.py',
+                '--',
+                '--views', json.dumps(views),
+                '--object', os.path.expanduser(asset_path),
+                '--resolution', '512',
+                '--output_folder', output_dir,
+                '--engine', 'CYCLES'
+            ]
+            
+            # Handle .blend files (exactly like fd_dinov2_blender_evaluator.py)
+            if asset_path.endswith('.blend'):
+                args.insert(1, asset_path)
                 
-                # Set camera position
-                ax.view_init(elev=self.pitch_angle, azim=yaw)
+            # Run Blender rendering with colorful materials
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=300)
+                if result.returncode != 0:
+                    print(f"Blender rendering failed: {result.stderr}")
+                    return []
+            except subprocess.TimeoutExpired:
+                print(f"Blender rendering timed out for {asset_path}")
+                return []
                 
-                # Render mesh
-                vertices = mesh_centered.vertices
-                faces = mesh_centered.faces
+            # Collect rendered images and rename them to desired format
+            for i, yaw in enumerate(self.yaw_angles):
+                temp_img_path = os.path.join(output_dir, f'{i:03d}.png')
+                final_img_path = os.path.join(output_dir, f'gt_view_{yaw}.png')
                 
-                # Create 3D polygon collection
-                face_vertices = vertices[faces]
-                mesh_collection = Poly3DCollection(face_vertices, alpha=0.8, facecolor='lightblue', edgecolor='gray')
-                ax.add_collection3d(mesh_collection)
-                
-                # Set equal aspect ratio and limits
-                max_range = 1.2
-                ax.set_xlim([-max_range, max_range])
-                ax.set_ylim([-max_range, max_range])
-                ax.set_zlim([-max_range, max_range])
-                
-                # Remove axes and background
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.set_zticks([])
-                ax.grid(False)
-                ax.set_facecolor('white')
-                
-                # Convert to image
-                fig.canvas.draw()
-                # Use buffer_rgba and convert to rgb
-                buf = fig.canvas.buffer_rgba()
-                img_array = np.asarray(buf)
-                img_rgb = img_array[:, :, :3]  # Remove alpha channel
-                
-                # Resize to target resolution
-                img_pil = Image.fromarray(img_rgb.astype(np.uint8))
-                img_pil = img_pil.resize((self.resolution, self.resolution), Image.Resampling.LANCZOS)
-                img_final = np.array(img_pil)
-                
-                rendered_images.append(img_final)
-                plt.close(fig)
-                
+                if os.path.exists(temp_img_path):
+                    # Rename to final format
+                    os.rename(temp_img_path, final_img_path)
+                    
+                    # Load image for return
+                    img = Image.open(final_img_path).convert('RGB')
+                    img_array = np.array(img)
+                    rendered_images.append(img_array)
+                    
         except Exception as e:
-            print(f"Error rendering asset: {e}")
+            print(f"Error rendering asset with Blender: {e}")
             return []
         
         return rendered_images
@@ -328,21 +410,23 @@ class Toys4kCLIPEvaluator:
         
         return avg_similarity
     
-    def evaluate_single_asset(self, dataset_path: str, row: pd.Series) -> Dict:
+    def evaluate_single_asset(self, dataset_path: str, metadata_row: pd.Series, excel_row: pd.Series = None) -> Dict:
         """
         Evaluate CLIP score for a single 3D asset from Toys4k.
         
         Args:
             dataset_path: Path to Toys4k dataset
-            row: Metadata row for the asset
+            metadata_row: Metadata row for the asset from metadata.csv
+            excel_row: Optional row from Excel file containing object_name
             
         Returns:
             Dictionary with evaluation results
         """
         result = {
-            'sha256': row['sha256'],
-            'file_identifier': row['file_identifier'],
-            'aesthetic_score': row.get('aesthetic_score', 0.0),
+            'sha256': metadata_row['sha256'],
+            'file_identifier': metadata_row['file_identifier'],
+            'aesthetic_score': metadata_row.get('aesthetic_score', 0.0),
+            'object_name': excel_row['object_name'] if excel_row is not None else 'unknown',
             'clip_score': 0.0,
             'num_views_rendered': 0,
             'success': False,
@@ -352,19 +436,13 @@ class Toys4kCLIPEvaluator:
         
         try:
             # Find asset file
-            asset_path = self.find_asset_file(dataset_path, row)
+            asset_path = self.find_asset_file(dataset_path, metadata_row)
             if asset_path is None:
                 result['error'] = 'Asset file not found'
                 return result
             
-            # Load 3D asset
-            mesh = self.load_3d_asset(asset_path)
-            if mesh is None:
-                result['error'] = 'Failed to load mesh'
-                return result
-            
             # Get the first (most detailed) caption
-            captions = row['parsed_captions']
+            captions = metadata_row['parsed_captions']
             if not captions:
                 result['error'] = 'No captions available'
                 return result
@@ -372,8 +450,12 @@ class Toys4kCLIPEvaluator:
             caption = captions[0]  # Use the most detailed caption
             result['caption_used'] = caption
             
-            # Render from multiple viewpoints
-            rendered_images = self.render_asset_multiview(mesh)
+            # Get object name and sha256 for directory naming
+            object_name = result['object_name']
+            sha256 = result['sha256']
+            
+            # Render from multiple viewpoints using Blender and save to specific directory
+            rendered_images = self.render_asset_multiview(asset_path, dataset_path, object_name, sha256)
             if not rendered_images:
                 result['error'] = 'Rendering failed'
                 return result
@@ -395,12 +477,13 @@ class Toys4kCLIPEvaluator:
         
         return result
     
-    def evaluate_toys4k_dataset(self, dataset_path: str, output_path: str = None, max_assets: int = None) -> Dict:
+    def evaluate_toys4k_dataset(self, dataset_path: str, excel_path: str = None, output_path: str = None, max_assets: int = None) -> Dict:
         """
         Evaluate CLIP scores for the Toys4k dataset.
         
         Args:
             dataset_path: Path to Toys4k dataset directory
+            excel_path: Optional path to Excel file with object_name and sha256
             output_path: Path to save results CSV file
             max_assets: Maximum number of assets to evaluate (for testing)
             
@@ -409,6 +492,14 @@ class Toys4kCLIPEvaluator:
         """
         # Load metadata
         metadata_df = self.load_toys4k_metadata(dataset_path)
+        
+        # Load Excel data if provided
+        excel_df = None
+        if excel_path:
+            excel_df = self.load_excel_data(excel_path)
+            # Filter metadata to only include assets that are in the Excel file
+            metadata_df = metadata_df[metadata_df['sha256'].isin(excel_df['sha256'])]
+            print(f"Filtered to {len(metadata_df)} assets that match Excel file")
         
         if max_assets:
             metadata_df = metadata_df.head(max_assets)
@@ -420,7 +511,14 @@ class Toys4kCLIPEvaluator:
         total_clip_score = 0.0
         
         for idx, row in tqdm(metadata_df.iterrows(), total=len(metadata_df), desc="Evaluating assets"):
-            result = self.evaluate_single_asset(dataset_path, row)
+            # Find corresponding Excel row if available
+            excel_row = None
+            if excel_df is not None:
+                matching_excel_rows = excel_df[excel_df['sha256'] == row['sha256']]
+                if not matching_excel_rows.empty:
+                    excel_row = matching_excel_rows.iloc[0]
+            
+            result = self.evaluate_single_asset(dataset_path, row, excel_row)
             results.append(result)
             
             if result['success']:
@@ -445,11 +543,14 @@ class Toys4kCLIPEvaluator:
             'total_assets': len(metadata_df),
             'successful_evaluations': successful_evaluations,
             'success_rate': successful_evaluations / len(metadata_df) if len(metadata_df) > 0 else 0.0,
-            'dataset_path': dataset_path
+            'dataset_path': dataset_path,
+            'excel_path': excel_path
         }
         
         print(f"\n=== Toys4k CLIP Score Evaluation Results ===")
         print(f"Dataset: {dataset_path}")
+        if excel_path:
+            print(f"Excel file: {excel_path}")
         print(f"Total assets: {len(metadata_df)}")
         print(f"Successful evaluations: {successful_evaluations}")
         print(f"Success rate: {aggregated_results['success_rate']:.2%}")
@@ -475,6 +576,8 @@ def main():
     parser = argparse.ArgumentParser(description='CLIP Score Evaluation for Toys4k Dataset')
     parser.add_argument('--dataset_path', type=str, default='/mnt/nas/Benchmark_Datatset/Toys4k',
                         help='Path to the Toys4k dataset directory')
+    parser.add_argument('--results_excel', type=str, default=None,
+                        help='Path to Excel file containing object_name and sha256 columns')
     parser.add_argument('--output_path', type=str, default='toys4k_clip_scores.csv',
                         help='Path to save detailed results CSV file')
     parser.add_argument('--clip_model', type=str, default='openai/clip-vit-base-patch32',
@@ -489,7 +592,7 @@ def main():
     
     # Run evaluation
     results = evaluator.evaluate_toys4k_dataset(
-        args.dataset_path, args.output_path, args.max_assets
+        args.dataset_path, args.results_excel, args.output_path, args.max_assets
     )
     
     print(f"\nFinal CLIP Score (×100): {results['mean_clip_score_scaled']:.2f}")

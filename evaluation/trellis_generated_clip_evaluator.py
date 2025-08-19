@@ -17,15 +17,19 @@ from PIL import Image
 from tqdm import tqdm
 import argparse
 import ast
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import trimesh
 import glob
+import tempfile
+import shutil
+from subprocess import DEVNULL, call
 
 # CLIP imports
 from transformers import CLIPProcessor, CLIPModel
+
+# Blender rendering setup
+BLENDER_LINK = 'https://download.blender.org/release/Blender3.0/blender-3.0.1-linux-x64.tar.xz'
+BLENDER_INSTALLATION_PATH = '/tmp'
+BLENDER_PATH = f'{BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64/blender'
 
 class TrellisGeneratedCLIPEvaluator:
     """
@@ -84,12 +88,27 @@ class TrellisGeneratedCLIPEvaluator:
         
         # Rendering parameters for 8 viewpoints
         self.yaw_angles = [0, 45, 90, 135, 180, 225, 270, 315]  # 8 viewpoints at 45° intervals
-        self.pitch_angle = 30  # Fixed pitch angle
+        self.pitch_angle = 30  # Fixed pitch angle in degrees
         self.radius = 2  # Fixed radius
         self.fov = 40  # Field of view in degrees
         self.resolution = 512  # Rendering resolution
         
+        # Install Blender if needed
+        self._install_blender()
+        
         print(f"Initialized CLIP Score evaluator with {len(self.yaw_angles)} viewpoints")
+    
+    def _install_blender(self):
+        """Install Blender if not already available."""
+        if not os.path.exists(BLENDER_PATH):
+            print("Installing Blender...")
+            os.system('sudo apt-get update')
+            os.system('sudo apt-get install -y libxrender1 libxi6 libxkbcommon-x11-0 libsm6')
+            os.system(f'wget {BLENDER_LINK} -P {BLENDER_INSTALLATION_PATH}')
+            os.system(f'tar -xvf {BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64.tar.xz -C {BLENDER_INSTALLATION_PATH}')
+            print("✓ Blender installed")
+        else:
+            print("✓ Blender already available")
     
     def load_llm_results(self, results_path: str) -> pd.DataFrame:
         """
@@ -137,6 +156,10 @@ class TrellisGeneratedCLIPEvaluator:
         }
         
         model_dir = model_dir_map.get(llm_model, llm_model)
+        
+        # Replace ':' with '_' for filesystem path compatibility
+        model_dir = model_dir.replace(':', '_')
+        
         asset_dir = os.path.join(output_base_path, model_dir, object_name)
         
         if not os.path.exists(asset_dir):
@@ -178,72 +201,88 @@ class TrellisGeneratedCLIPEvaluator:
             print(f"Error loading asset {asset_path}: {e}")
             return None
     
-    def render_asset_multiview(self, mesh: trimesh.Trimesh) -> List[np.ndarray]:
+    def render_asset_multiview(self, asset_path: str, save_dir: str = None) -> List[np.ndarray]:
         """
-        Render a 3D asset from 8 different viewpoints using matplotlib.
+        Render a 3D asset from 8 different viewpoints using Blender.
         
         Args:
-            mesh: 3D mesh to render
+            asset_path: Path to the 3D asset file
+            save_dir: Optional directory to save rendered images
             
         Returns:
             List of rendered images as numpy arrays
         """
         rendered_images = []
         
-        # Normalize mesh to unit sphere
-        mesh_centered = mesh.copy()
-        mesh_centered.vertices -= mesh_centered.centroid
-        scale = 1.0 / mesh_centered.bounds.ptp().max() if mesh_centered.bounds.ptp().max() > 0 else 1.0
-        mesh_centered.vertices *= scale
-        
         try:
+            # Use save_dir if provided, otherwise create temporary directory
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+                temp_dir = save_dir
+                use_temp = False
+            else:
+                temp_dir = tempfile.mkdtemp()
+                use_temp = True
+            # Build camera views for 8 viewpoints
+            views = []
             for yaw in self.yaw_angles:
-                # Create matplotlib figure
-                fig = plt.figure(figsize=(8, 8), dpi=64)
-                ax = fig.add_subplot(111, projection='3d')
+                yaw_rad = np.radians(yaw)
+                pitch_rad = np.radians(self.pitch_angle)
+                fov_rad = np.radians(self.fov)
                 
-                # Set camera position
-                ax.view_init(elev=self.pitch_angle, azim=yaw)
+                views.append({
+                    'yaw': yaw_rad,
+                    'pitch': pitch_rad,
+                    'radius': self.radius,
+                    'fov': fov_rad
+                })
+            
+            # Blender rendering arguments
+            args = [
+                BLENDER_PATH, '-b', '-P', 
+                os.path.join('/home/sr/TRELLIS/dataset_toolkits/blender_script', 'render.py'),
+                '--',
+                '--views', json.dumps(views),
+                '--object', asset_path,
+                '--resolution', str(self.resolution),
+                '--output_folder', temp_dir,
+                '--engine', 'CYCLES',
+            ]
+            
+            # Run Blender rendering
+            call(args, stdout=DEVNULL, stderr=DEVNULL)
+            
+            # Load rendered images and rename if saving
+            for i, yaw in enumerate(self.yaw_angles):
+                temp_img_path = os.path.join(temp_dir, f'{i:03d}.png')
                 
-                # Render mesh
-                vertices = mesh_centered.vertices
-                faces = mesh_centered.faces
+                if save_dir:
+                    # Rename to desired format when saving
+                    final_img_path = os.path.join(temp_dir, f'gen_view_{yaw}.png')
+                    if os.path.exists(temp_img_path):
+                        os.rename(temp_img_path, final_img_path)
+                        img_path = final_img_path
+                    else:
+                        img_path = None
+                else:
+                    img_path = temp_img_path
                 
-                # Create 3D polygon collection
-                face_vertices = vertices[faces]
-                mesh_collection = Poly3DCollection(face_vertices, alpha=0.8, facecolor='lightblue', edgecolor='gray')
-                ax.add_collection3d(mesh_collection)
-                
-                # Set equal aspect ratio and limits
-                max_range = 1.2
-                ax.set_xlim([-max_range, max_range])
-                ax.set_ylim([-max_range, max_range])
-                ax.set_zlim([-max_range, max_range])
-                
-                # Remove axes and background
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.set_zticks([])
-                ax.grid(False)
-                ax.set_facecolor('white')
-                
-                # Convert to image
-                fig.canvas.draw()
-                # Use buffer_rgba and convert to rgb
-                buf = fig.canvas.buffer_rgba()
-                img_array = np.asarray(buf)
-                img_rgb = img_array[:, :, :3]  # Remove alpha channel
-                
-                # Resize to target resolution
-                img_pil = Image.fromarray(img_rgb.astype(np.uint8))
-                img_pil = img_pil.resize((self.resolution, self.resolution), Image.Resampling.LANCZOS)
-                img_final = np.array(img_pil)
-                
-                rendered_images.append(img_final)
-                plt.close(fig)
-                
+                if img_path and os.path.exists(img_path):
+                    img = Image.open(img_path).convert('RGB')
+                    img_array = np.array(img)
+                    rendered_images.append(img_array)
+                else:
+                    print(f"Warning: Rendered image not found: {img_path}")
+            
+            # Clean up temporary directory if we created it
+            if use_temp:
+                shutil.rmtree(temp_dir)
+            
+            if not rendered_images:
+                print("No rendered images found - Blender rendering may have failed")
+                    
         except Exception as e:
-            print(f"Error rendering asset: {e}")
+            print(f"Error rendering asset with Blender: {e}")
             return []
         
         return rendered_images
@@ -331,7 +370,7 @@ class TrellisGeneratedCLIPEvaluator:
         
         return avg_similarity
     
-    def evaluate_single_generated_asset(self, output_base_path: str, row: pd.Series) -> Dict:
+    def evaluate_single_generated_asset(self, output_base_path: str, row: pd.Series, save_base_path: str = None) -> Dict:
         """
         Evaluate CLIP score for a single TRELLIS-generated 3D asset.
         
@@ -360,22 +399,16 @@ class TrellisGeneratedCLIPEvaluator:
         try:
             # Find generated asset files
             asset_files = self.find_generated_assets(
-                output_base_path, row['category'], row['object_name_clean']
+                output_base_path, row['llm_model'], row['object_name_clean']
             )
             
             if not asset_files:
-                result['error'] = f"No generated assets found for {row['category']}/{row['object_name_clean']}"
+                result['error'] = f"No generated assets found for {row['llm_model']}/{row['object_name_clean']}"
                 return result
             
             # Use the first found asset file
             asset_path = asset_files[0]
             result['asset_path'] = asset_path
-            
-            # Load 3D asset
-            mesh = self.load_3d_asset(asset_path)
-            if mesh is None:
-                result['error'] = f'Failed to load mesh from {asset_path}'
-                return result
             
             # Use the LLM-augmented text prompt
             text_prompt = row['text_prompt']
@@ -383,8 +416,26 @@ class TrellisGeneratedCLIPEvaluator:
                 result['error'] = 'No text_prompt available'
                 return result
             
-            # Render from multiple viewpoints
-            rendered_images = self.render_asset_multiview(mesh)
+            # Prepare save directory for rendered images
+            save_dir = None
+            if save_base_path:
+                # Extract middle part from file_identifier (e.g., keyboard/keyboard_022/keyboard_022.blend -> keyboard_022)
+                file_id = row['file_identifier']
+                if '/' in file_id:
+                    parts = file_id.split('/')
+                    if len(parts) >= 2:
+                        middle_part = parts[1]  # keyboard_022
+                    else:
+                        middle_part = parts[0]
+                else:
+                    middle_part = file_id
+                
+                # Create save directory: {save_path}/CLIP_evaluation/TRELLIS-text-large/{LLM_model}/{middle_part}/
+                llm_model_clean = row['llm_model'].replace(':', '_')
+                save_dir = os.path.join(save_base_path, 'CLIP_evaluation', 'TRELLIS-text-large', llm_model_clean, middle_part)
+            
+            # Render from multiple viewpoints using Blender
+            rendered_images = self.render_asset_multiview(asset_path, save_dir)
             if not rendered_images:
                 result['error'] = 'Rendering failed'
                 return result
@@ -401,6 +452,12 @@ class TrellisGeneratedCLIPEvaluator:
             result['clip_score'] = clip_score
             result['success'] = True
             
+            # Save CLIP score to txt file in the same directory as rendered images
+            if save_dir:
+                clip_score_path = os.path.join(save_dir, 'clip_score.txt')
+                with open(clip_score_path, 'w') as f:
+                    f.write(f"{clip_score:.6f}\n")
+            
         except Exception as e:
             result['error'] = str(e)
         
@@ -409,7 +466,7 @@ class TrellisGeneratedCLIPEvaluator:
     def evaluate_trellis_generated_dataset(self, 
                                          results_excel_path: str, 
                                          output_base_path: str, 
-                                         save_path: str = None,
+                                         save_base_path: str = None,
                                          max_assets: int = None,
                                          llm_models_filter: List[str] = None) -> Dict:
         """
@@ -418,7 +475,7 @@ class TrellisGeneratedCLIPEvaluator:
         Args:
             results_excel_path: Path to Excel file with LLM results
             output_base_path: Base path to generated outputs directory
-            save_path: Path to save results CSV file
+            save_base_path: Base directory path to save results and rendered images
             max_assets: Maximum number of assets to evaluate (for testing)
             llm_models_filter: List of LLM models to evaluate (None for all)
             
@@ -446,10 +503,10 @@ class TrellisGeneratedCLIPEvaluator:
         model_results = {}
         
         for idx, row in tqdm(results_df.iterrows(), total=len(results_df), desc="Evaluating generated assets"):
-            result = self.evaluate_single_generated_asset(output_base_path, row)
+            result = self.evaluate_single_generated_asset(output_base_path, row, save_base_path)
             evaluation_results.append(result)
             
-            llm_model = result['category']
+            llm_model = result['llm_model']
             if llm_model not in model_results:
                 model_results[llm_model] = {'total': 0, 'successful': 0, 'total_score': 0.0}
             
@@ -522,7 +579,13 @@ class TrellisGeneratedCLIPEvaluator:
                   f"(×100: {summary['mean_clip_score_scaled']:.2f})")
         
         # Save detailed results to CSV
-        if save_path:
+        if save_base_path:
+            # Generate CSV filename from Excel filename
+            excel_filename = os.path.basename(results_excel_path)
+            excel_name = os.path.splitext(excel_filename)[0]  # Remove .xlsx extension
+            csv_filename = f"CLIP_evaluation_{excel_name}.csv"
+            save_path = os.path.join(save_base_path, csv_filename)
+            
             df_results = pd.DataFrame(evaluation_results)
             df_results.to_csv(save_path, index=False)
             print(f"\nDetailed results saved to: {save_path}")
@@ -576,8 +639,8 @@ Examples:
     
     parser.add_argument('--save_path', 
                         type=str, 
-                        default='trellis_generated_clip_scores.csv',
-                        help='Path to save detailed evaluation results CSV file')
+                        default=None,
+                        help='Base directory path to save evaluation results and rendered images')
     
     # Model and evaluation parameters
     parser.add_argument('--clip_model', 
@@ -617,7 +680,10 @@ Examples:
     print(f"📊 TRELLIS Generated Assets CLIP Score Evaluation")
     print(f"📁 Excel file: {args.results_excel}")
     print(f"📁 Assets path: {args.output_base_path}")
-    print(f"💾 Results will be saved to: {args.save_path}")
+    if args.save_path:
+        print(f"💾 Results will be saved to: {args.save_path}")
+    else:
+        print(f"💾 Results will not be saved (no save_path provided)")
     if args.llm_models:
         print(f"🔍 Evaluating models: {', '.join(args.llm_models)}")
     if args.max_assets:
@@ -634,7 +700,11 @@ Examples:
     )
     
     print(f"\n🎯 Final CLIP Score (×100): {results['mean_clip_score_scaled']:.2f}")
-    print(f"✅ Results saved to: {args.save_path}")
+    if args.save_path:
+        excel_name = os.path.splitext(os.path.basename(args.results_excel))[0]
+        csv_filename = f"CLIP_evaluation_{excel_name}.csv"
+        final_save_path = os.path.join(args.save_path, csv_filename)
+        print(f"✅ Results saved to: {final_save_path}")
 
 
 if __name__ == "__main__":

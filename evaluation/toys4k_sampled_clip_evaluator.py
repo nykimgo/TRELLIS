@@ -17,14 +17,19 @@ from PIL import Image
 from tqdm import tqdm
 import argparse
 import ast
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import trimesh
+import tempfile
+import shutil
+import glob
+from subprocess import DEVNULL, call
 
 # CLIP imports
 from transformers import CLIPProcessor, CLIPModel
+
+# Blender rendering setup
+BLENDER_LINK = 'https://download.blender.org/release/Blender3.0/blender-3.0.1-linux-x64.tar.xz'
+BLENDER_INSTALLATION_PATH = '/tmp'
+BLENDER_PATH = f'{BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64/blender'
 
 class Toys4kSampledCLIPEvaluator:
     """
@@ -83,19 +88,34 @@ class Toys4kSampledCLIPEvaluator:
         
         # Rendering parameters for 8 viewpoints
         self.yaw_angles = [0, 45, 90, 135, 180, 225, 270, 315]  # 8 viewpoints at 45° intervals
-        self.pitch_angle = 30  # Fixed pitch angle
+        self.pitch_angle = 30  # Fixed pitch angle in degrees
         self.radius = 2  # Fixed radius
         self.fov = 40  # Field of view in degrees
         self.resolution = 512  # Rendering resolution
         
+        # Install Blender if needed
+        self._install_blender()
+        
         print(f"Initialized CLIP Score evaluator with {len(self.yaw_angles)} viewpoints")
+    
+    def _install_blender(self):
+        """Install Blender if not already available."""
+        if not os.path.exists(BLENDER_PATH):
+            print("Installing Blender...")
+            os.system('sudo apt-get update')
+            os.system('sudo apt-get install -y libxrender1 libxi6 libxkbcommon-x11-0 libsm6')
+            os.system(f'wget {BLENDER_LINK} -P {BLENDER_INSTALLATION_PATH}')
+            os.system(f'tar -xvf {BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64.tar.xz -C {BLENDER_INSTALLATION_PATH}')
+            print("✓ Blender installed")
+        else:
+            print("✓ Blender already available")
     
     def load_sampled_data(self, sampled_csv_path: str) -> pd.DataFrame:
         """
         Load the 100 sampled assets data.
         
         Args:
-            sampled_csv_path: Path to sampled_data_100_random.csv
+            sampled_csv_path: Path to sampled_data_100_random.csv or .xlsx
             
         Returns:
             DataFrame with sampled asset data
@@ -103,18 +123,25 @@ class Toys4kSampledCLIPEvaluator:
         if not os.path.exists(sampled_csv_path):
             raise FileNotFoundError(f"Sampled data file not found: {sampled_csv_path}")
         
-        df = pd.read_csv(sampled_csv_path)
+        # Check file extension and read accordingly
+        if sampled_csv_path.endswith('.xlsx') or sampled_csv_path.endswith('.xls'):
+            df = pd.read_excel(sampled_csv_path)
+        else:
+            df = pd.read_csv(sampled_csv_path)
+            
         print(f"Loaded {len(df)} sampled assets from {sampled_csv_path}")
         
-        # Parse captions (they are stored as string representations of lists)
-        def parse_captions(caption_str):
-            try:
-                captions = ast.literal_eval(caption_str)
-                return captions if isinstance(captions, list) else [caption_str]
-            except:
-                return [caption_str]
+        # Parse captions if 'all_captions' column exists
+        if 'all_captions' in df.columns:
+            def parse_captions(caption_str):
+                try:
+                    captions = ast.literal_eval(caption_str)
+                    return captions if isinstance(captions, list) else [caption_str]
+                except:
+                    return [caption_str]
+            
+            df['parsed_captions'] = df['all_captions'].apply(parse_captions)
         
-        df['parsed_captions'] = df['all_captions'].apply(parse_captions)
         return df
     
     def load_toys4k_metadata(self, dataset_path: str) -> pd.DataFrame:
@@ -206,72 +233,65 @@ class Toys4kSampledCLIPEvaluator:
             print(f"Error loading asset {asset_path}: {e}")
             return None
     
-    def render_asset_multiview(self, mesh: trimesh.Trimesh) -> List[np.ndarray]:
+    def render_asset_multiview(self, asset_path: str) -> List[np.ndarray]:
         """
-        Render a 3D asset from 8 different viewpoints using matplotlib.
+        Render a 3D asset from 8 different viewpoints using Blender.
         
         Args:
-            mesh: 3D mesh to render
+            asset_path: Path to the 3D asset file
             
         Returns:
             List of rendered images as numpy arrays
         """
         rendered_images = []
         
-        # Normalize mesh to unit sphere
-        mesh_centered = mesh.copy()
-        mesh_centered.vertices -= mesh_centered.centroid
-        scale = 1.0 / mesh_centered.bounds.ptp().max() if mesh_centered.bounds.ptp().max() > 0 else 1.0
-        mesh_centered.vertices *= scale
-        
         try:
-            for yaw in self.yaw_angles:
-                # Create matplotlib figure
-                fig = plt.figure(figsize=(8, 8), dpi=64)
-                ax = fig.add_subplot(111, projection='3d')
+            # Create temporary directory for Blender output
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Build camera views for 8 viewpoints
+                views = []
+                for yaw in self.yaw_angles:
+                    yaw_rad = np.radians(yaw)
+                    pitch_rad = np.radians(self.pitch_angle)
+                    fov_rad = np.radians(self.fov)
+                    
+                    views.append({
+                        'yaw': yaw_rad,
+                        'pitch': pitch_rad,
+                        'radius': self.radius,
+                        'fov': fov_rad
+                    })
                 
-                # Set camera position
-                ax.view_init(elev=self.pitch_angle, azim=yaw)
+                # Blender rendering arguments
+                args = [
+                    BLENDER_PATH, '-b', '-P', 
+                    os.path.join('/home/sr/TRELLIS/dataset_toolkits/blender_script', 'render.py'),
+                    '--',
+                    '--views', json.dumps(views),
+                    '--object', asset_path,
+                    '--resolution', str(self.resolution),
+                    '--output_folder', temp_dir,
+                    '--engine', 'CYCLES',
+                ]
                 
-                # Render mesh
-                vertices = mesh_centered.vertices
-                faces = mesh_centered.faces
+                # Run Blender rendering
+                call(args, stdout=DEVNULL, stderr=DEVNULL)
                 
-                # Create 3D polygon collection
-                face_vertices = vertices[faces]
-                mesh_collection = Poly3DCollection(face_vertices, alpha=0.8, facecolor='lightblue', edgecolor='gray')
-                ax.add_collection3d(mesh_collection)
+                # Load rendered images
+                for i in range(len(self.yaw_angles)):
+                    img_path = os.path.join(temp_dir, f'{i:03d}.png')
+                    if os.path.exists(img_path):
+                        img = Image.open(img_path).convert('RGB')
+                        img_array = np.array(img)
+                        rendered_images.append(img_array)
+                    else:
+                        print(f"Warning: Rendered image not found: {img_path}")
                 
-                # Set equal aspect ratio and limits
-                max_range = 1.2
-                ax.set_xlim([-max_range, max_range])
-                ax.set_ylim([-max_range, max_range])
-                ax.set_zlim([-max_range, max_range])
-                
-                # Remove axes and background
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.set_zticks([])
-                ax.grid(False)
-                ax.set_facecolor('white')
-                
-                # Convert to image
-                fig.canvas.draw()
-                # Use buffer_rgba and convert to rgb
-                buf = fig.canvas.buffer_rgba()
-                img_array = np.asarray(buf)
-                img_rgb = img_array[:, :, :3]  # Remove alpha channel
-                
-                # Resize to target resolution
-                img_pil = Image.fromarray(img_rgb.astype(np.uint8))
-                img_pil = img_pil.resize((self.resolution, self.resolution), Image.Resampling.LANCZOS)
-                img_final = np.array(img_pil)
-                
-                rendered_images.append(img_final)
-                plt.close(fig)
-                
+                if not rendered_images:
+                    print("No rendered images found - Blender rendering may have failed")
+                    
         except Exception as e:
-            print(f"Error rendering asset: {e}")
+            print(f"Error rendering asset with Blender: {e}")
             return []
         
         return rendered_images
@@ -389,12 +409,6 @@ class Toys4kSampledCLIPEvaluator:
                 result['error'] = 'Asset file not found'
                 return result
             
-            # Load 3D asset
-            mesh = self.load_3d_asset(asset_path)
-            if mesh is None:
-                result['error'] = 'Failed to load mesh'
-                return result
-            
             # Use the original caption
             caption = row['original_caption']
             if pd.isna(caption) or not caption.strip():
@@ -407,8 +421,8 @@ class Toys4kSampledCLIPEvaluator:
             
             result['caption_used'] = caption
             
-            # Render from multiple viewpoints
-            rendered_images = self.render_asset_multiview(mesh)
+            # Render from multiple viewpoints using Blender
+            rendered_images = self.render_asset_multiview(asset_path)
             if not rendered_images:
                 result['error'] = 'Rendering failed'
                 return result

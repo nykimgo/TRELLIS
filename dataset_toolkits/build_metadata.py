@@ -243,7 +243,22 @@ if __name__ == '__main__':
             executor.shutdown(wait=True)
 
     # statistics
-    metadata.to_csv(os.path.join(opt.output_dir, 'metadata.csv'))
+    try:
+        metadata.to_csv(os.path.join(opt.output_dir, 'metadata.csv'))
+    except OSError as e:
+        print(f"Failed to save to original path: {e}")
+        # Try alternative save method
+        backup_path = os.path.join(opt.output_dir, f'metadata_new_{timestamp}.csv')
+        metadata.to_csv(backup_path)
+        print(f"Saved to backup path: {backup_path}")
+        # Try to replace the original file
+        try:
+            if os.path.exists(os.path.join(opt.output_dir, 'metadata.csv')):
+                os.remove(os.path.join(opt.output_dir, 'metadata.csv'))
+            shutil.move(backup_path, os.path.join(opt.output_dir, 'metadata.csv'))
+            print("Successfully replaced original metadata.csv")
+        except Exception as e2:
+            print(f"Could not replace original file: {e2}")
     num_downloaded = metadata['local_path'].count() if 'local_path' in metadata.columns else 0
     with open(os.path.join(opt.output_dir, 'statistics.txt'), 'w') as f:
         f.write('Statistics:\n')

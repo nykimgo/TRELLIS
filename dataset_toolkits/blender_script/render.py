@@ -54,6 +54,7 @@ def init_render(engine='CYCLES', resolution=512, geo_mode=False):
         
     bpy.context.preferences.addons['cycles'].preferences.get_devices()
     bpy.context.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
+    print(f'geo mode:{geo_mode}')
     
 def init_nodes(save_depth=False, save_normal=False, save_albedo=False, save_mist=False):
     if not any([save_depth, save_normal, save_albedo, save_mist]):
@@ -523,6 +524,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_mesh', action='store_true', help='Save the mesh as a .ply file.')
     argv = sys.argv[sys.argv.index("--") + 1:]
     args = parser.parse_args(argv)
+    print(f'args:{args}')
 
     main(args)
     

@@ -82,6 +82,7 @@ if __name__ == '__main__':
     # install blender
     print('Checking blender...', flush=True)
     _install_blender()
+    print('✓ Blender installed')
 
     # get file list
     if not os.path.exists(os.path.join(opt.output_dir, 'metadata.csv')):

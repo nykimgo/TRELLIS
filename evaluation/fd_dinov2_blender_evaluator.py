@@ -163,23 +163,74 @@ class FD_dinov2_BlenderEvaluator:
         
         return float(fd)
         
-    def evaluate_single_asset(self, gen_path: str, gt_path: str, save_dir: Optional[str] = None, asset_name: str = None) -> Dict:
+    def get_or_create_gt_cache(self, gt_path: str, gt_cache_dir: str, base_asset_name: str, sha256: str) -> Tuple[List[str], torch.Tensor]:
+        """
+        Get cached GT views and features, or create them if they don't exist
+        Returns: (gt_image_paths, gt_features)
+        """
+        # Create cache directory structure
+        cache_asset_dir = os.path.join(gt_cache_dir, f"{base_asset_name}_{sha256[:6]}")
+        
+        # Check if cache exists
+        cache_features_path = os.path.join(cache_asset_dir, 'gt_features.npy')
+        cache_images = []
+        for i in range(4):
+            img_path = os.path.join(cache_asset_dir, f'gt_view_{i}.png')
+            cache_images.append(img_path)
+            
+        # If all cached files exist, load them
+        if os.path.exists(cache_features_path) and all(os.path.exists(img) for img in cache_images):
+            print(f"Loading cached GT views for {base_asset_name}")
+            gt_features = torch.from_numpy(np.load(cache_features_path)).to(self.device)
+            return cache_images, gt_features
+        
+        # Otherwise, render and cache
+        print(f"Rendering and caching GT views for {base_asset_name}")
+        os.makedirs(cache_asset_dir, exist_ok=True)
+        
+        # Render GT views
+        with tempfile.TemporaryDirectory() as temp_dir:
+            gt_render_dir = os.path.join(temp_dir, 'gt_renders')
+            gt_images = self.render_4_views_blender(gt_path, gt_render_dir)
+            
+            if len(gt_images) == 0:
+                return [], torch.empty(0, 1024).to(self.device)
+            
+            # Extract features
+            gt_features = self.extract_dinov2_features(gt_images)
+            
+            # Save to cache
+            for i, gt_img in enumerate(gt_images):
+                cache_img_path = os.path.join(cache_asset_dir, f'gt_view_{i}.png')
+                os.system(f'cp {gt_img} {cache_img_path}')
+                
+            np.save(cache_features_path, gt_features.cpu().numpy())
+            
+            return cache_images, gt_features
+    
+    def evaluate_single_asset(self, gen_path: str, gt_path: str, save_dir: Optional[str] = None, asset_name: str = None, 
+                             gt_cache_dir: str = None, base_asset_name: str = None, sha256: str = None) -> Dict:
         """Evaluate a single generated asset against ground truth"""
         if asset_name is None:
             asset_name = Path(gen_path).stem
         
-        # Create temporary directories for rendering
+        # Create temporary directory for generated asset rendering
         with tempfile.TemporaryDirectory() as temp_dir:
             gen_render_dir = os.path.join(temp_dir, 'gen_renders')
-            gt_render_dir = os.path.join(temp_dir, 'gt_renders')
             
             # Render generated asset
             print(f"Rendering generated asset: {asset_name}")
             gen_images = self.render_4_views_blender(gen_path, gen_render_dir)
             
-            # Render ground truth asset
-            print(f"Rendering ground truth asset: {asset_name}")
-            gt_images = self.render_4_views_blender(gt_path, gt_render_dir)
+            # Get or create cached GT views and features
+            if gt_cache_dir and base_asset_name and sha256:
+                gt_images, gt_features = self.get_or_create_gt_cache(gt_path, gt_cache_dir, base_asset_name, sha256)
+            else:
+                # Fallback to direct rendering if cache not available
+                print(f"Rendering ground truth asset: {asset_name}")
+                gt_render_dir = os.path.join(temp_dir, 'gt_renders')
+                gt_images = self.render_4_views_blender(gt_path, gt_render_dir)
+                gt_features = self.extract_dinov2_features(gt_images) if gt_images else torch.empty(0, 1024).to(self.device)
             
             if len(gen_images) == 0 or len(gt_images) == 0:
                 print(f"Warning: Failed to render {asset_name}")
@@ -203,10 +254,11 @@ class FD_dinov2_BlenderEvaluator:
                     os.system(f'cp {gen_img} {gen_save_path}')
                     os.system(f'cp {gt_img} {gt_save_path}')
             
-            # Extract features
+            # Extract features for generated images only (GT features already extracted if cached)
             print(f"Extracting DINOv2 features for {asset_name}")
             gen_features = self.extract_dinov2_features(gen_images)
-            gt_features = self.extract_dinov2_features(gt_images)
+            
+            # GT features already extracted in cache or fallback above
             
             if gen_features.size(0) == 0 or gt_features.size(0) == 0:
                 return {
@@ -264,23 +316,27 @@ class FD_dinov2_BlenderEvaluator:
         merged_df = sampled_df.merge(results_df, on='sha256', how='inner')
         print(f"Matched {len(merged_df)} assets between sampled CSV and LLM results")
         
-        # Limit number of assets if specified
+        # Limit number of assets if specified (but keep all LLM model variations)
         if max_assets is not None and max_assets > 0:
             merged_df = merged_df.head(max_assets)
-            print(f"Limited to {max_assets} assets for testing")
+            print(f"Limited to {max_assets} LLM results for testing")
         
         results = []
         save_dir = None
         if save_renders:
             save_dir = os.path.splitext(output_path)[0] + '_renders'
             os.makedirs(save_dir, exist_ok=True)
+            
+        # Setup GT cache directory
+        gt_cache_dir = os.path.join(ground_truth_dir, 'render_4views_for_fd')
+        os.makedirs(gt_cache_dir, exist_ok=True)
         
         print(f"Evaluating {len(merged_df)} assets...")
         
         for _, row in tqdm(merged_df.iterrows(), total=len(merged_df)):
             file_identifier = row['file_identifier_x']
-            # Extract asset name from file_identifier (e.g., giraffe/giraffe_006/giraffe_006.blend -> giraffe_006)
-            asset_name = Path(file_identifier).stem
+            # Extract base asset name from file_identifier (e.g., giraffe/giraffe_006/giraffe_006.blend -> giraffe_006)
+            base_asset_name = Path(file_identifier).stem
             
             # Get LLM model and object name from results
             llm_model = row['llm_model']
@@ -289,6 +345,9 @@ class FD_dinov2_BlenderEvaluator:
             
             # Convert LLM model name (: -> _)
             llm_model_folder = llm_model.replace(':', '_')
+            
+            # Create unique asset name including LLM model info
+            asset_name = f"{base_asset_name}_{llm_model_folder}_{sha256[:6]}"
             
             # Find generated asset in proper directory structure
             gen_asset_dir = os.path.join(generated_dir, llm_model_folder, object_name_clean)
@@ -310,6 +369,10 @@ class FD_dinov2_BlenderEvaluator:
                     print(f"  Directory does not exist")
                 results.append({
                     'asset_name': asset_name,
+                    'base_asset_name': base_asset_name,
+                    'llm_model': llm_model,
+                    'object_name_clean': object_name_clean,
+                    'sha256': sha256,
                     'fd_dinov2': float('inf'),
                     'gen_rendered': 0,
                     'gt_rendered': 0,
@@ -329,6 +392,10 @@ class FD_dinov2_BlenderEvaluator:
                 print(f"  Looking for: {os.path.join(ground_truth_dir, file_identifier)}")
                 results.append({
                     'asset_name': asset_name,
+                    'base_asset_name': base_asset_name,
+                    'llm_model': llm_model,
+                    'object_name_clean': object_name_clean,
+                    'sha256': sha256,
                     'fd_dinov2': float('inf'),
                     'gen_rendered': 0,
                     'gt_rendered': 0,
@@ -344,12 +411,24 @@ class FD_dinov2_BlenderEvaluator:
                 if save_dir:
                     model_save_dir = os.path.join(save_dir, "TRELLIS-text-large", llm_model_folder, folder_name)
                 
-                result = self.evaluate_single_asset(gen_path, gt_path, model_save_dir, asset_name)
+                result = self.evaluate_single_asset(gen_path, gt_path, model_save_dir, asset_name, 
+                                                   gt_cache_dir, base_asset_name, sha256)
+                # Add LLM model info to result
+                result.update({
+                    'base_asset_name': base_asset_name,
+                    'llm_model': llm_model,
+                    'object_name_clean': object_name_clean,
+                    'sha256': sha256
+                })
                 results.append(result)
             except Exception as e:
                 print(f"Error evaluating {asset_name}: {str(e)}")
                 results.append({
                     'asset_name': asset_name,
+                    'base_asset_name': base_asset_name,
+                    'llm_model': llm_model,
+                    'object_name_clean': object_name_clean,
+                    'sha256': sha256,
                     'fd_dinov2': float('inf'),
                     'gen_rendered': 0,
                     'gt_rendered': 0,
@@ -363,25 +442,56 @@ class FD_dinov2_BlenderEvaluator:
         valid_scores = results_df[results_df['fd_dinov2'] != float('inf')]['fd_dinov2']
         
         summary = {
-            'total_assets': len(results_df),
-            'successful_evaluations': len(valid_scores),
-            'failed_evaluations': len(results_df) - len(valid_scores),
-            'mean_fd_dinov2': valid_scores.mean() if len(valid_scores) > 0 else float('inf'),
-            'std_fd_dinov2': valid_scores.std() if len(valid_scores) > 0 else float('inf'),
-            'median_fd_dinov2': valid_scores.median() if len(valid_scores) > 0 else float('inf'),
-            'min_fd_dinov2': valid_scores.min() if len(valid_scores) > 0 else float('inf'),
-            'max_fd_dinov2': valid_scores.max() if len(valid_scores) > 0 else float('inf')
+            'overall': {
+                'total_assets': len(results_df),
+                'successful_evaluations': len(valid_scores),
+                'failed_evaluations': len(results_df) - len(valid_scores),
+                'mean_fd_dinov2': valid_scores.mean() if len(valid_scores) > 0 else float('inf'),
+                'std_fd_dinov2': valid_scores.std() if len(valid_scores) > 0 else float('inf'),
+                'median_fd_dinov2': valid_scores.median() if len(valid_scores) > 0 else float('inf'),
+                'min_fd_dinov2': valid_scores.min() if len(valid_scores) > 0 else float('inf'),
+                'max_fd_dinov2': valid_scores.max() if len(valid_scores) > 0 else float('inf')
+            }
         }
         
+        # Calculate LLM model-specific statistics
+        llm_model_stats = {}
+        valid_results_df = results_df[results_df['fd_dinov2'] != float('inf')]
+        
+        if len(valid_results_df) > 0:
+            for llm_model in valid_results_df['llm_model'].unique():
+                model_data = valid_results_df[valid_results_df['llm_model'] == llm_model]['fd_dinov2']
+                if len(model_data) > 0:
+                    llm_model_stats[llm_model] = {
+                        'count': len(model_data),
+                        'mean_fd_dinov2': model_data.mean(),
+                        'std_fd_dinov2': model_data.std(),
+                        'median_fd_dinov2': model_data.median(),
+                        'min_fd_dinov2': model_data.min(),
+                        'max_fd_dinov2': model_data.max()
+                    }
+        
+        summary['by_llm_model'] = llm_model_stats
+        
         print("\n=== FD_dinov2 Evaluation Results ===")
-        print(f"Total assets: {summary['total_assets']}")
-        print(f"Successful evaluations: {summary['successful_evaluations']}")
-        print(f"Failed evaluations: {summary['failed_evaluations']}")
-        print(f"Mean FD_dinov2: {summary['mean_fd_dinov2']:.4f}")
-        print(f"Std FD_dinov2: {summary['std_fd_dinov2']:.4f}")
-        print(f"Median FD_dinov2: {summary['median_fd_dinov2']:.4f}")
-        print(f"Min FD_dinov2: {summary['min_fd_dinov2']:.4f}")
-        print(f"Max FD_dinov2: {summary['max_fd_dinov2']:.4f}")
+        print(f"Total assets: {summary['overall']['total_assets']}")
+        print(f"Successful evaluations: {summary['overall']['successful_evaluations']}")
+        print(f"Failed evaluations: {summary['overall']['failed_evaluations']}")
+        print(f"Mean FD_dinov2: {summary['overall']['mean_fd_dinov2']:.4f}")
+        print(f"Std FD_dinov2: {summary['overall']['std_fd_dinov2']:.4f}")
+        print(f"Median FD_dinov2: {summary['overall']['median_fd_dinov2']:.4f}")
+        print(f"Min FD_dinov2: {summary['overall']['min_fd_dinov2']:.4f}")
+        print(f"Max FD_dinov2: {summary['overall']['max_fd_dinov2']:.4f}")
+        
+        print("\n=== Results by LLM Model ===")
+        for llm_model, stats in summary['by_llm_model'].items():
+            print(f"\n{llm_model}:")
+            print(f"  Count: {stats['count']}")
+            print(f"  Mean FD: {stats['mean_fd_dinov2']:.4f}")
+            print(f"  Std FD: {stats['std_fd_dinov2']:.4f}")
+            print(f"  Median FD: {stats['median_fd_dinov2']:.4f}")
+            print(f"  Min FD: {stats['min_fd_dinov2']:.4f}")
+            print(f"  Max FD: {stats['max_fd_dinov2']:.4f}")
         
         # Save results
         results_df.to_csv(output_path, index=False)
